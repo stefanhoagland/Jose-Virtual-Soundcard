@@ -164,7 +164,10 @@ bool DanteDevice::subscribe(int local_channel, const std::string& tx_channel, co
 void DanteDevice::worker() {
     const int rate = cfg_.sample_rate;
     const int chunk = std::max(1, rate / 1000);
-    const uint64_t lead = uint64_t(rate) * 3 / 1000;  // write test tones 3 ms ahead
+    // Inferno sends each sample the moment its time comes, straight from this
+    // buffer, so the tones must already be there. Write them well ahead so a
+    // late wake-up of this thread can't leave old samples (a click).
+    const uint64_t lead = std::min<uint64_t>(uint64_t(rate) * 20 / 1000, uint64_t(buffer_frames_) / 4);
     AudioSource tone = make_test_tone(0, cfg_.tx_channels, uint32_t(rate));
     std::vector<float> buf(size_t(chunk) * size_t(std::max(1, cfg_.tx_channels)));
     std::vector<float> silence(buf.size(), 0.0f);
