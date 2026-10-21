@@ -1,15 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
+# Mac: one binary for Apple Silicon and Intel. Must be set before project().
+# (Ignored on other systems.)
+set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "")
+set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "")
 project(JoseVirtualSoundcard CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
-endif()
-if(APPLE)
-  # One binary for Apple Silicon and Intel Macs.
-  set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "")
-  set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "")
 endif()
 
 add_compile_options(-Wall -Wextra)

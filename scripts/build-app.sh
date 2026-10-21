@@ -10,8 +10,9 @@ APP_NAME="Jose Virtual Soundcard"
 OUT=dist
 APP="$OUT/$APP_NAME.app"
 
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
 cmake --build build -j4 --target jvs_engine
+lipo -info build/libjvs_engine.a
 
 rm -rf "$OUT"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

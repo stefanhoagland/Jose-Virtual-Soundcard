@@ -19,7 +19,7 @@ jobs:
         run: ./build/jvs_tests
       - name: Check the binary runs
         run: |
-          file build/jvs-poc
+          lipo -info build/jvs-poc
           ./build/jvs-poc help
           ./build/jvs-poc interfaces
       - name: Package
