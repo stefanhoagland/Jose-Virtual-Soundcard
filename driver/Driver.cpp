@@ -550,6 +550,7 @@ OSStatus Initialize(AudioServerPlugInDriverRef drv, AudioServerPlugInHostRef hos
     {
         std::lock_guard<std::mutex> lk(g.mu);
         if (saved) settings_from_dict(static_cast<CFDictionaryRef>(saved), g.settings);
+        g.settings.tones = false;  // test tones never come back on by themselves
         g.rate.store(Float64(g.settings.rate));
         g.tones.store(g.settings.tones);
     }

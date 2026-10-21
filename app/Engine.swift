@@ -212,6 +212,7 @@ final class EngineModel: ObservableObject {
     }
 
     func stop() {
+        if status.tones { setTones(false) }
         if let dev = findDevice() { Driver.set(dev, ["enabled": false, "tones": false]) }
         running = false
         peaks = []
@@ -252,9 +253,26 @@ final class EngineModel: ObservableObject {
 
     // MARK: Test tools
 
+    private var keepAwake: AudioDeviceIOProcID?
+
     func setTones(_ on: Bool) {
-        if let dev = findDevice() { Driver.set(dev, ["tones": on]) }
+        guard let dev = findDevice() else { return }
+        Driver.set(dev, ["tones": on])
         status.tones = on
+        // macOS slows the driver down while no app uses the device, which
+        // breaks up the tones. While they're on, this app uses the device
+        // (it plays nothing; the driver sends the tones instead).
+        if on && keepAwake == nil {
+            var proc: AudioDeviceIOProcID?
+            if AudioDeviceCreateIOProcIDWithBlock(&proc, dev, nil, { _, _, _, _, _ in }) == noErr, let p = proc {
+                AudioDeviceStart(dev, p)
+                keepAwake = p
+            }
+        } else if !on, let p = keepAwake {
+            AudioDeviceStop(dev, p)
+            AudioDeviceDestroyIOProcID(dev, p)
+            keepAwake = nil
+        }
     }
 
     // MARK: Polling

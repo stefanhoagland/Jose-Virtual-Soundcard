@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -349,11 +350,28 @@ int main(int argc, char** argv) {
         std::printf("test process (device B) log:\n%s\n", buf.data());
     }
 
+    // Settings survive a restart of Core Audio (as after a reboot).
+    bool restored = false;
+    {
+        b.stop();
+        std::system("launchctl kickstart -k system/com.apple.audio.coreaudiod");
+        wait_ms(3000);
+        std::string st;
+        for (int i = 0; i < 60 && !restored; ++i) {
+            AudioObjectID d2 = find_device();
+            if (d2 != kAudioObjectUnknown) {
+                dev = d2;
+                st = get_string(dev, kPropStatus);
+                restored = st.find("\"state\":\"running\"") != std::string::npos;
+            }
+            if (!restored) wait_ms(1000);
+        }
+        std::printf("after restarting Core Audio: %s\n", restored ? "running again with the saved settings" : st.c_str());
+    }
     std::printf("driver status: %s\n", get_string(dev, kPropStatus).c_str());
     std::printf("Core Audio overloads during the test: %d\n", overloads.load());
-    bool ok = out_ok && in_ok && out_clicks == 0 && in_clicks == 0;
+    bool ok = out_ok && in_ok && out_clicks == 0 && in_clicks == 0 && restored;
     if (!ok) std::printf("driver log:\n%s\n", get_string(dev, kPropLog).c_str());
-    b.stop();
     master.stop();
     std::printf(ok ? "driver test passed\n" : "driver test FAILED\n");
     return ok ? 0 : 1;
