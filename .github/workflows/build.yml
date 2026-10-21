@@ -1,0 +1,46 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (Apple Silicon + Intel)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j4
+      - name: Unit tests
+        run: ./build/jvs_tests
+      - name: Check the binary runs
+        run: |
+          file build/jvs-poc
+          ./build/jvs-poc help
+          ./build/jvs-poc interfaces
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp build/jvs-poc dist/
+          tar -czf jvs-poc-macos.tar.gz -C dist jvs-poc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jvs-poc-macos
+          path: jvs-poc-macos.tar.gz
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j4
+      - name: Unit tests
+        run: ./build/jvs_tests
+      - name: Loopback test (fake clock, send 16 channels, receive 8)
+        run: sudo ./tests/loopback.sh build/jvs-poc
