@@ -1,0 +1,84 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write  # to publish the test build as a download
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (Apple Silicon + Intel)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j4
+      - name: Unit tests
+        run: ./build/jvs_tests
+      - name: Check the binary runs
+        run: |
+          lipo -info build/jvs-poc
+          ./build/jvs-poc help
+          ./build/jvs-poc interfaces
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp build/jvs-poc dist/
+          tar -czf jvs-poc-macos.tar.gz -C dist jvs-poc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jvs-poc-macos
+          path: jvs-poc-macos.tar.gz
+      - name: Build the app
+        run: VERSION=0.1.0 BUILD=${{ github.run_number }} ./scripts/build-app.sh
+      - name: Check the app bundle
+        run: |
+          APP="dist/Jose Virtual Soundcard.app"
+          lipo -info "$APP/Contents/MacOS/JoseVirtualSoundcard"
+          plutil -lint "$APP/Contents/Info.plist"
+          ls -la dist
+      - name: Launch the app and check it stays up
+        run: |
+          "dist/Jose Virtual Soundcard.app/Contents/MacOS/JoseVirtualSoundcard" > app.log 2>&1 &
+          PID=$!
+          sleep 10
+          if ! kill -0 $PID; then echo "App exited early:"; cat app.log; exit 1; fi
+          kill $PID
+          echo "App ran for 10 seconds without crashing"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JoseVirtualSoundcard-app
+          path: dist/*.dmg
+      # A fixed download link for the newest test build:
+      # https://github.com/<owner>/<repo>/releases/download/latest-test/JoseVirtualSoundcard.dmg
+      - name: Publish as "latest-test" download
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          cp dist/JoseVirtualSoundcard-*.dmg dist/JoseVirtualSoundcard.dmg
+          gh release delete latest-test --cleanup-tag --yes || true
+          gh release create latest-test dist/JoseVirtualSoundcard.dmg jvs-poc-macos.tar.gz \
+            --target "$SHA" --prerelease --title "Latest test build" \
+            --notes "Test build from commit $SHA. Not signed by Apple yet: on first launch use System Settings > Privacy & Security > Open Anyway."
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j4
+      - name: Unit tests
+        run: ./build/jvs_tests
+      - name: Loopback test (fake clock, send 16 channels, receive 8)
+        run: sudo ./tests/loopback.sh build/jvs-poc
+      - name: App engine test (the C interface the Mac app uses)
+        run: sudo ./build/jvs_capi_test "$(ip -4 route show default | awk '{print $5; exit}')"

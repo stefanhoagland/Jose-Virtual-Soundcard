@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Jose Virtual Soundcard</string>
+    <key>CFBundleDisplayName</key>
+    <string>Jose Virtual Soundcard</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.stefanhoagland.jose-virtual-soundcard</string>
+    <key>CFBundleExecutable</key>
+    <string>JoseVirtualSoundcard</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>__VERSION__</string>
+    <key>CFBundleVersion</key>
+    <string>__BUILD__</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Jose Virtual Soundcard needs your local network to find Dante devices, follow the network clock and send and receive audio.</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Test build</string>
+</dict>
+</plist>
