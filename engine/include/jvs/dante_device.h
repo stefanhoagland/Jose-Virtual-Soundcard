@@ -57,6 +57,8 @@ public:
     bool write_tx(uint64_t t, int frames, const float* in);
 
     int buffer_frames() const { return buffer_frames_; }
+    // UDP port Dante Controller uses for routing (4440 unless it was taken).
+    int arc_port() const { return arc_port_; }
 
     // Built-in test signal: tones on every transmit channel (channel n plays
     // 200 + 100*n Hz at -18 dBFS).
@@ -81,6 +83,7 @@ private:
     std::atomic<bool> audio_{false};
     uint64_t start_time_ = 0;
     int buffer_frames_ = 32768;
+    int arc_port_ = 4440;
     int32_t* tx_ = nullptr;
     const int32_t* rx_ = nullptr;
 };

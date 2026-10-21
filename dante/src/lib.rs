@@ -104,7 +104,7 @@ pub struct JvsdConfig {
   pub buffer_frames: c_int,
   /// Set to a value >= 1 to run several devices on one IP address.
   pub process_id: c_int,
-  /// Base UDP port for the control protocols when process_id >= 1.
+  /// Base UDP port for the control protocols (0 = standard Dante ports).
   pub alt_port: c_int,
 }
 
@@ -139,9 +139,9 @@ pub extern "C" fn jvsd_create(cfg: *const JvsdConfig) -> *mut Jvsd {
   }
   if cfg.process_id >= 1 {
     conf.insert("PROCESS_ID".to_owned(), cfg.process_id.to_string());
-    if cfg.alt_port > 0 {
-      conf.insert("ALT_PORT".to_owned(), cfg.alt_port.to_string());
-    }
+  }
+  if cfg.alt_port > 0 {
+    conf.insert("ALT_PORT".to_owned(), cfg.alt_port.to_string());
   }
   let settings = match std::panic::catch_unwind(|| Settings::new("Jose Virtual Soundcard", "JoseVSC", ip, &conf)) {
     Ok(s) => s,

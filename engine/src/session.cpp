@@ -306,24 +306,32 @@ void jvs_set_log_file(const char* path) {
     if (path && *path) jvsd_set_log_file(path);
 }
 
+static int arc_port_of(jvs_session* s) {
+    std::lock_guard<std::mutex> lk(s->mu);
+    return s->dev ? s->dev->arc_port() : 4440;
+}
+
 long long jvs_controller_requests(jvs_session* s) {
-    (void)s;
     char buf[4096];
     jvsd_net_summary(buf, sizeof buf);
-    const char* p = std::strstr(buf, "4440: ");
-    if (p && (p == buf || p[-1] == '\n')) return std::atoll(p + 6);
+    std::string key = std::to_string(arc_port_of(s)) + ": ";
+    for (const char* p = buf; (p = std::strstr(p, key.c_str())); ++p)
+        if (p == buf || p[-1] == '\n') return std::atoll(p + key.size());
     return 0;
 }
 
 void jvs_get_diagnostics(jvs_session* s, char* out, int out_size) {
     if (!out || out_size <= 0) return;
-    std::string text = "Control traffic by port (4440 routing, 8800 device info, 8700 info, 4455 audio setup):\n";
+    const int arc = arc_port_of(s);
+    std::string text = "Control ports: " + std::to_string(arc) + " routing, " + std::to_string(arc == 4440 ? 8800 : arc + 1) +
+                       " device info, " + std::to_string(arc == 4440 ? 4455 : arc + 2) + " audio setup, " +
+                       std::to_string(arc == 4440 ? 8700 : arc + 3) + " info" +
+                       (arc == 4440 ? "" : " (standard ports were taken)") + "\nControl traffic by port:\n";
     {
         char buf[4096];
         jvsd_net_summary(buf, sizeof buf);
         text += *buf ? buf : "  nothing received yet\n";
     }
-    (void)s;
 #if defined(__APPLE__)
     // Which programs hold the Dante ports on this Mac.
     text += "Dante ports in use on this Mac:\n";
