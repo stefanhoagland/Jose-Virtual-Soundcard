@@ -237,6 +237,18 @@ int main(int argc, char** argv) {
     wait_ms(3000);  // let discovery settle
     b.subscribe(0, "TX 1", "jvs-drv");
 
+    // Count Core Audio overloads (the IO thread missed its deadline).
+    static std::atomic<int> overloads{0};
+    {
+        auto a = addr(kAudioDeviceProcessorOverload);
+        AudioObjectAddPropertyListener(
+            dev, &a,
+            [](AudioObjectID, UInt32, const AudioObjectPropertyAddress*, void*) -> OSStatus {
+                ++overloads;
+                return 0;
+            },
+            nullptr);
+    }
     IoState io;
     AudioDeviceIOProcID proc = nullptr;
     if (AudioDeviceCreateIOProcID(dev, io_proc, &io, &proc) != 0 || AudioDeviceStart(dev, proc) != 0) {
@@ -296,13 +308,14 @@ int main(int argc, char** argv) {
     if (in_ok) {
         wait_ms(2000);
         std::lock_guard<std::mutex> lk(io.mu);
-        in_clicks = clicks(io.in_ch1.data(), io.in_ch1.size());
+        in_clicks = clicks(io.in_ch1.data(), io.in_ch1.size(), 1, 0);
         std::printf("clicks in %.1f s from Dante to the Mac: %d\n", double(io.in_ch1.size()) / 48000, in_clicks);
     }
 
     AudioDeviceStop(dev, proc);
     AudioDeviceDestroyIOProcID(dev, proc);
     std::printf("driver status: %s\n", get_string(dev, kPropStatus).c_str());
+    std::printf("Core Audio overloads during the test: %d\n", overloads.load());
     bool ok = out_ok && in_ok && out_clicks == 0 && in_clicks == 0;
     if (!ok) std::printf("driver log:\n%s\n", get_string(dev, kPropLog).c_str());
     b.stop();

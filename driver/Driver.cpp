@@ -755,10 +755,17 @@ OSStatus GetPropertyData(AudioServerPlugInDriverRef drv, AudioObjectID obj, pid_
             }
             return put<UInt32>(size, out_size, out, frames_for_us(us));
         }
-        case kAudioDevicePropertySafetyOffset:
-            // Output must be written a little before its time; input is ready
-            // right away.
-            return put<UInt32>(size, out_size, out, input ? frames_for_us(1000) : frames_for_us(3000));
+        case kAudioDevicePropertySafetyOffset: {
+            // Output is sent the moment its time comes, so it must be written
+            // ahead: half the latency setting (at least 3 ms) leaves room for
+            // a late wake-up. Input is ready right away.
+            int us;
+            {
+                std::lock_guard<std::mutex> lk(g.mu);
+                us = g.settings.latency_us;
+            }
+            return put<UInt32>(size, out_size, out, input ? frames_for_us(1000) : frames_for_us(std::max(3000, us / 2)));
+        }
         case kAudioDevicePropertyIsHidden: return put<UInt32>(size, out_size, out, 0);
         case kAudioDevicePropertyZeroTimeStampPeriod: return put<UInt32>(size, out_size, out, kZeroPeriod);
         case kAudioDevicePropertyClockIsStable: return put<UInt32>(size, out_size, out, 1);
