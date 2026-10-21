@@ -42,6 +42,7 @@ bool ClockServer::start(const std::string& path, const PtpFollower* ptp) {
         // Same process: hand the overlay to Inferno directly, no socket.
         run_ = true;
         th_ = std::thread([this] {
+            set_thread_realtime(50000, 1000);
             std::string name = path_.substr(7);
             while (run_) {
                 int64_t last_sync, shift;

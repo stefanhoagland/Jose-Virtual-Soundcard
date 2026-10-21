@@ -3,6 +3,12 @@
 #include <ctime>
 #include <cerrno>
 
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_policy.h>
+#endif
+
 namespace jvs {
 
 int64_t mono_ns() {
@@ -41,6 +47,27 @@ void sleep_until_mono(int64_t t_ns) {
         if (nanosleep(&ts, nullptr) == 0) return;
         if (errno != EINTR) return;
     }
+}
+
+void set_thread_realtime(int period_us, int computation_us) {
+#if defined(__APPLE__)
+    // Mach time-constraint policy, as Core Audio uses for its own threads.
+    // Keeps the thread on time even when macOS throttles the process (for
+    // example the audio driver's process while no app plays audio).
+    mach_timebase_info_data_t tb;
+    mach_timebase_info(&tb);
+    auto ticks = [&](int us) { return uint32_t(double(us) * 1000.0 * tb.denom / tb.numer); };
+    thread_time_constraint_policy_data_t p;
+    p.period = ticks(period_us);
+    p.computation = ticks(computation_us);
+    p.constraint = ticks(period_us);
+    p.preemptible = 1;
+    thread_policy_set(mach_thread_self(), THREAD_TIME_CONSTRAINT_POLICY, reinterpret_cast<thread_policy_t>(&p),
+                      THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+#else
+    (void)period_us;
+    (void)computation_us;
+#endif
 }
 
 }  // namespace jvs

@@ -107,7 +107,10 @@ bool DanteDevice::start(const DanteConfig& cfg, std::string* error) {
     tx_ = jvsd_tx_buffer(jvsd_);
     state_ = DanteState::WaitingForClock;
     run_ = true;
-    th_ = std::thread([this] { worker(); });
+    th_ = std::thread([this] {
+        set_thread_realtime(1000, 200);
+        worker();
+    });
     return true;
 }
 
