@@ -34,6 +34,9 @@ void jvsd_name(Jvsd* h, char* out, int len);
 int jvsd_subscribe(Jvsd* h, int local_channel, const char* tx_channel, const char* tx_device);
 int jvsd_unsubscribe(Jvsd* h, int local_channel);
 void jvsd_destroy(Jvsd* h);
+/* Diagnostics */
+int jvsd_set_log_file(const char* path); /* call before jvsd_create */
+void jvsd_net_summary(char* out, int len); /* control traffic per port */
 
 #ifdef __cplusplus
 }

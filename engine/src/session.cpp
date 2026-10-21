@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -19,6 +20,7 @@
 #include "jvs/net.h"
 #include "jvs/player.h"
 #include "jvs/wav.h"
+#include "../../dante/jvs_dante.h"
 
 using namespace jvs;
 
@@ -298,6 +300,56 @@ int jvs_subscribe(jvs_session* s, int local_channel, const char* tx_channel, con
         return -1;
     }
     return 0;
+}
+
+void jvs_set_log_file(const char* path) {
+    if (path && *path) jvsd_set_log_file(path);
+}
+
+static int arc_port_of(jvs_session* s) {
+    std::lock_guard<std::mutex> lk(s->mu);
+    return s->dev ? s->dev->arc_port() : 4440;
+}
+
+long long jvs_controller_requests(jvs_session* s) {
+    char buf[4096];
+    jvsd_net_summary(buf, sizeof buf);
+    std::string key = std::to_string(arc_port_of(s)) + ": ";
+    for (const char* p = buf; (p = std::strstr(p, key.c_str())); ++p)
+        if (p == buf || p[-1] == '\n') return std::atoll(p + key.size());
+    return 0;
+}
+
+void jvs_get_diagnostics(jvs_session* s, char* out, int out_size) {
+    if (!out || out_size <= 0) return;
+    const int arc = arc_port_of(s);
+    std::string text = "Control ports: " + std::to_string(arc) + " routing, " + std::to_string(arc == 4440 ? 8800 : arc + 1) +
+                       " device info, " + std::to_string(arc == 4440 ? 4455 : arc + 2) + " audio setup, " +
+                       std::to_string(arc == 4440 ? 8700 : arc + 3) + " info" +
+                       (arc == 4440 ? "" : " (standard ports were taken)") + "\nControl traffic by port:\n";
+    {
+        char buf[4096];
+        jvsd_net_summary(buf, sizeof buf);
+        text += *buf ? buf : "  nothing received yet\n";
+    }
+#if defined(__APPLE__)
+    // Which programs hold the Dante ports on this Mac.
+    text += "Dante ports in use on this Mac:\n";
+    if (FILE* p = popen("/usr/sbin/netstat -anv -p udp 2>/dev/null", "r")) {
+        char line[512];
+        const char* ports[] = {".319 ", ".320 ", ".4400 ", ".4440 ", ".4455 ", ".8700 ", ".8702 ", ".8708 ", ".8800 "};
+        while (std::fgets(line, sizeof line, p)) {
+            for (const char* port : ports)
+                if (std::strstr(line, port)) {
+                    text += "  ";
+                    text += line;
+                    break;
+                }
+        }
+        pclose(p);
+    }
+#endif
+    std::snprintf(out, size_t(out_size), "%s", text.c_str());
 }
 
 }  // extern "C"

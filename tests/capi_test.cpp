@@ -112,6 +112,11 @@ int main(int argc, char** argv) {
     }
     ok &= heard;
 
+    {
+        char diag[8192];
+        jvs_get_diagnostics(s, diag, sizeof diag);
+        std::printf("%s", diag);
+    }
     jvs_record_stop(s);
     struct stat sb {};
     bool wav_ok = stat(wav, &sb) == 0 && sb.st_size > 44 + 48000 * CH * 4 / 2;

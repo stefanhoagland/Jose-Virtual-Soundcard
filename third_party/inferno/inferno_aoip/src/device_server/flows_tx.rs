@@ -589,6 +589,7 @@ impl FlowsTransmitter {
         };
 
         let socket = UdpSocket::bind(SocketAddr::new(IpAddr::V4(self.self_info.ip_address), 0))?;
+        crate::net_utils::set_multicast_interface(&socket, self.self_info.ip_address);
         socket.connect(dst_addr)?;
         socket.set_nonblocking(true)?;
         //socket.set_read_timeout(Some(Duration::from_micros(1)))?;

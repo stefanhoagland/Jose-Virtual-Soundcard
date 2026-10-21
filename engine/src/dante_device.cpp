@@ -1,5 +1,8 @@
 #include "jvs/dante_device.h"
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -14,6 +17,32 @@ namespace jvs {
 
 namespace {
 constexpr float kToFloat = 1.0f / 2147483648.0f;
+
+// Can we bind UDP ip:port the way Inferno will (no address reuse)?
+bool udp_port_free(uint32_t ip_be, int port) {
+    int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return false;
+    sockaddr_in sa{};
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(uint16_t(port));
+    sa.sin_addr.s_addr = ip_be;
+    bool ok = ::bind(fd, reinterpret_cast<sockaddr*>(&sa), sizeof sa) == 0;
+    ::close(fd);
+    return ok;
+}
+
+// Dante's control ports: routing (ARC), device info (CMC), audio setup, info requests.
+constexpr int kStandardPorts[] = {4440, 8800, 4455, 8700};
+
+// Inferno's alternative layout uses base, base+1, base+2, base+3.
+int pick_alt_port(uint32_t ip_be) {
+    for (int base = 24440; base < 24440 + 100 * 10; base += 10) {
+        bool ok = true;
+        for (int i = 0; i < 4 && ok; ++i) ok = udp_port_free(ip_be, base + i);
+        if (ok) return base;
+    }
+    return 0;
+}
 
 inline int32_t to_i32(float f) {
     f = std::clamp(f, -1.0f, 1.0f);
@@ -57,6 +86,16 @@ bool DanteDevice::start(const DanteConfig& cfg, std::string* error) {
     jc.buffer_frames = buffer_frames_;
     jc.process_id = cfg.process_id;
     jc.alt_port = cfg.alt_port;
+    // Dante Controller installs a helper (ConMon) that holds UDP 8700 and
+    // 8800 on its Mac, and Dante Virtual Soundcard may hold others. If any
+    // standard port is taken, use other ports; Dante Controller learns
+    // them from the device's announcements.
+    if (jc.alt_port == 0) {
+        bool all_free = true;
+        for (int port : kStandardPorts) all_free &= udp_port_free(ni.ipv4, port);
+        if (!all_free) jc.alt_port = pick_alt_port(ni.ipv4);
+    }
+    arc_port_ = jc.alt_port > 0 ? jc.alt_port : 4440;
     jvsd_ = jvsd_create(&jc);
     if (!jvsd_) {
         clock_server_.stop();
@@ -125,7 +164,10 @@ bool DanteDevice::subscribe(int local_channel, const std::string& tx_channel, co
 void DanteDevice::worker() {
     const int rate = cfg_.sample_rate;
     const int chunk = std::max(1, rate / 1000);
-    const uint64_t lead = uint64_t(rate) * 3 / 1000;  // write test tones 3 ms ahead
+    // Inferno sends each sample the moment its time comes, straight from this
+    // buffer, so the tones must already be there. Write them well ahead so a
+    // late wake-up of this thread can't leave old samples (a click).
+    const uint64_t lead = std::min<uint64_t>(uint64_t(rate) * 20 / 1000, uint64_t(buffer_frames_) / 4);
     AudioSource tone = make_test_tone(0, cfg_.tx_channels, uint32_t(rate));
     std::vector<float> buf(size_t(chunk) * size_t(std::max(1, cfg_.tx_channels)));
     std::vector<float> silence(buf.size(), 0.0f);

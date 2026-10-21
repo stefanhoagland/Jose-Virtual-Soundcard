@@ -1,6 +1,9 @@
 // End-to-end Dante test on one machine: a fake PTPv1 clock, device A sends
 // test tones, device B subscribes to A's channels (like routing in Dante
 // Controller) and we check B receives the right tone on every channel.
+#include <algorithm>
+#include <atomic>
+#include <thread>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -78,6 +81,51 @@ int main(int argc, char** argv) {
             if (amp < 0.10 || amp > 0.15) ok = false;
         }
         std::printf("\n");
+    }
+
+    // Glitch check: record channel 1 for 3 s while every CPU core is busy,
+    // and count jumps in the waveform (each one is an audible click).
+    int glitches = 0;
+    if (ok) {
+        std::atomic<bool> hog{true};
+        std::vector<std::thread> hogs;
+        for (unsigned i = 0; i < std::max(2u, std::thread::hardware_concurrency()); ++i)
+            hogs.emplace_back([&hog] {
+                volatile double x = 1;
+                while (hog) x = x * 1.0000001 + 1e-9;
+            });
+        const int B = 2400;  // 50 ms blocks, read 20 ms behind now
+        std::vector<float> blk(size_t(B) * CH);
+        uint64_t t0 = 0;
+        b.now(t0);
+        uint64_t pos = t0 - 960;
+        float prev1 = 0, prev2 = 0;
+        int seen = 0;
+        while (pos < t0 + 3 * 48000) {
+            uint64_t now = 0;
+            b.now(now);
+            if (pos + B + 960 > now) {
+                wait_ms(5);
+                continue;
+            }
+            b.read_rx(pos, B, blk.data());
+            for (int i = 0; i < B; ++i) {
+                float s = blk[size_t(i * CH)];
+                // A 300 Hz tone at 0.125 never bends more than 0.0002 per sample.
+                if (seen >= 2 && std::fabs(s - 2 * prev1 + prev2) > 0.01f) {
+                    if (glitches < 5) std::printf("  click at %.3f s (block sample %d)\n", double(int64_t(pos + uint64_t(i) - t0)) / 48000, i);
+                    ++glitches;
+                }
+                prev2 = prev1;
+                prev1 = s;
+                ++seen;
+            }
+            pos += B;
+        }
+        hog = false;
+        for (auto& h : hogs) h.join();
+        std::printf("glitches in 3 s under full CPU load: %d\n", glitches);
+        if (glitches > 0) ok = false;
     }
     b.stop();
     a.stop();

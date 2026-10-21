@@ -39,13 +39,23 @@ enum ClockChoice: Int, CaseIterable, Identifiable {
 }
 
 let sampleRates = [44100, 48000, 88200, 96000]
-let latencyChoicesMs = [2.0, 4.0, 5.0, 10.0, 20.0, 40.0]
+let latencyChoicesMs = [4.0, 6.0, 10.0, 20.0, 40.0]  // like Dante Virtual Soundcard; below 4 ms the Mac can't keep up
 let channelChoices = [2, 8, 16, 32, 48, 64]
+
+/// The Dante engine's log, for test reports.
+let logURL: URL = {
+    let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
+        .appendingPathComponent("Logs/Jose Virtual Soundcard", isDirectory: true)
+    try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+    return logs.appendingPathComponent("dante.log")
+}()
 
 /// Everything the window shows. Polls the C engine a few times a second.
 final class EngineModel: ObservableObject {
     private let session = jvs_create()
     private var timer: Timer?
+    /// Keeps macOS from throttling the app (App Nap) while audio runs.
+    private var activity: NSObjectProtocol?
     private let defaults = UserDefaults.standard
 
     @Published var ports: [NetPort] = []
@@ -54,6 +64,7 @@ final class EngineModel: ObservableObject {
     @Published var status = jvs_status()
     @Published var peaks: [Float] = []
     @Published var lastRecording: String?
+    @Published var controllerRequests = 0
 
     // Settings (saved between launches)
     @Published var selectedPort: String { didSet { defaults.set(selectedPort, forKey: "port") } }
@@ -69,6 +80,9 @@ final class EngineModel: ObservableObject {
     @Published var monitorRight = 2
 
     init() {
+        // Start each launch with a fresh log.
+        try? FileManager.default.removeItem(at: logURL)
+        jvs_set_log_file(logURL.path)
         selectedPort = defaults.string(forKey: "port") ?? ""
         deviceName = defaults.string(forKey: "deviceName") ?? "Jose-Virtual-Soundcard"
         let rate = defaults.integer(forKey: "sampleRate")
@@ -127,6 +141,11 @@ final class EngineModel: ObservableObject {
         if ok == 0 {
             running = true
             errorText = nil
+            if activity == nil {
+                activity = ProcessInfo.processInfo.beginActivity(
+                    options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled],
+                    reason: "Sending and receiving Dante audio")
+            }
         } else {
             running = false
             errorText = String(cString: jvs_last_error(session))
@@ -135,6 +154,10 @@ final class EngineModel: ObservableObject {
 
     func stop() {
         jvs_stop(session)
+        if let a = activity {
+            ProcessInfo.processInfo.endActivity(a)
+            activity = nil
+        }
         running = false
         status = jvs_status()
         peaks = []
@@ -222,6 +245,7 @@ final class EngineModel: ObservableObject {
         var s = jvs_status()
         jvs_get_status(session, &s)
         status = s
+        controllerRequests = Int(jvs_controller_requests(session))
         let fresh = floatArray(s.peak_db, count: Int(s.rx_channels))
         // Meters fall back slowly so short peaks stay visible.
         if peaks.count != fresh.count {
@@ -253,7 +277,23 @@ final class EngineModel: ObservableObject {
                 .joined(separator: " ") + " dBFS (others silent)")
         }
         if let e = errorText { lines.append("Error: \(e)") }
+        lines.append("")
+        lines.append(diagnostics())
+        let log = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
+        let tail = log.split(separator: "\n", omittingEmptySubsequences: true).suffix(30)
+        lines.append("Last log lines:")
+        lines.append(tail.isEmpty ? "  (empty)" : tail.map { "  " + $0 }.joined(separator: "\n"))
         return lines.joined(separator: "\n")
+    }
+
+    func diagnostics() -> String {
+        var buf = [CChar](repeating: 0, count: 16384)
+        jvs_get_diagnostics(session, &buf, Int32(buf.count))
+        return String(cString: buf)
+    }
+
+    func showLog() {
+        NSWorkspace.shared.activateFileViewerSelecting([logURL])
     }
 
     func copyReport() {
