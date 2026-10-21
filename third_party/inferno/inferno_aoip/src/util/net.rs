@@ -36,6 +36,9 @@ impl UdpSocketWrapper {
     let socket_opt =
       UdpSocket::bind(SocketAddr::new(std::net::IpAddr::V4(listen_addr), listen_port)).await;
     let socket = socket_opt.expect("error starting really needed listener");
+    if !listen_addr.is_unspecified() {
+      set_multicast_interface(&socket, listen_addr);
+    }
     // TODO MAY PANIC: this error should be non-fatal because some apps may use Inferno as an optional audio I/O
     let listen_port = socket.local_addr().unwrap().port();
     UdpSocketWrapper {
@@ -103,12 +106,26 @@ impl UdpSocketWrapper {
 
 pub async fn create_tokio_udp_socket(self_ip: Ipv4Addr) -> tokio::io::Result<(UdpSocket, u16)> {
   let socket = UdpSocket::bind(SocketAddr::new(IpAddr::V4(self_ip), 0)).await?;
+  set_multicast_interface(&socket, self_ip);
   let port = socket.local_addr()?.port();
   return Ok((socket, port));
 }
 
 pub fn create_mio_udp_socket(self_ip: Ipv4Addr) -> std::io::Result<(mio::net::UdpSocket, u16)> {
   let socket = mio::net::UdpSocket::bind(SocketAddr::new(IpAddr::V4(self_ip), 0))?;
+  set_multicast_interface(&socket, self_ip);
   let port = socket.local_addr()?.port();
   return Ok((socket, port));
+}
+
+/// Jose Virtual Soundcard addition: send multicast out of the interface that
+/// owns `ip`. On macOS, binding a socket to an address doesn't choose the
+/// interface for multicast; without this, multicast (device info, heartbeats,
+/// multicast flows) leaves through the default-route interface, which on a
+/// Mac with Wi-Fi plus a wired Dante port is the wrong one.
+#[cfg(unix)]
+pub fn set_multicast_interface<S: std::os::fd::AsFd>(socket: &S, ip: Ipv4Addr) {
+  if let Err(e) = socket2::SockRef::from(socket).set_multicast_if_v4(&ip) {
+    log::warn!("couldn't set multicast interface to {ip}: {e:?}");
+  }
 }
