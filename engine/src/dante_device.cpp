@@ -68,10 +68,10 @@ bool DanteDevice::start(const DanteConfig& cfg, std::string* error) {
             "Couldn't open the clock ports (UDP 319/320). Quit Dante Virtual Soundcard, Dante Via or Dante "
             "Controller on this Mac and try again.");
     char path[64];
-    std::snprintf(path, sizeof path, "/tmp/jvs-clock-%d-%d", int(getpid()), cfg.process_id);
+    std::snprintf(path, sizeof path, "inproc:jvs-%p", static_cast<void*>(this));
     if (!clock_server_.start(path, &ptp_)) {
         ptp_.stop();
-        return fail("Couldn't create the clock socket.");
+        return fail("Couldn't start the clock.");
     }
     std::string ip = ipv4_to_string(ni.ipv4);
     JvsdConfig jc{};
@@ -127,6 +127,12 @@ void DanteDevice::stop() {
 bool DanteDevice::now(uint64_t& t) const {
     if (!ptp_.locked()) return false;
     t = media_time_from_ptp(ptp_.now(), uint32_t(cfg_.sample_rate), 0);
+    return true;
+}
+
+bool DanteDevice::mono_from_media(uint64_t t, int64_t& mono) const {
+    if (!ptp_.locked()) return false;
+    mono = ptp_.mono_from_ptp(ptp_from_media_time(t, uint32_t(cfg_.sample_rate), 0));
     return true;
 }
 
@@ -203,14 +209,25 @@ void DanteDevice::worker() {
             tx_pos = t;
             tx_init = true;
         }
-        while (cfg_.tx_channels > 0 && tx_pos < t + lead) {
-            if (tones_) {
-                tone(tx_pos, buf.data(), chunk);
-                write_tx(tx_pos, chunk, buf.data());
-            } else {
+        if (cfg_.external_tx && !tones_) {
+            // The driver writes ahead of now. Clear what Inferno has already
+            // sent (with 2 ms to spare), so nothing old is ever sent again.
+            const uint64_t behind = t - uint64_t(rate) * 2 / 1000;
+            if (tx_pos > behind + lead || tx_pos + uint64_t(buffer_frames_) / 2 < behind) tx_pos = behind;
+            while (cfg_.tx_channels > 0 && tx_pos < behind) {
                 write_tx(tx_pos, chunk, silence.data());
+                tx_pos += uint64_t(chunk);
             }
-            tx_pos += uint64_t(chunk);
+        } else {
+            while (cfg_.tx_channels > 0 && tx_pos < t + lead) {
+                if (tones_) {
+                    tone(tx_pos, buf.data(), chunk);
+                    write_tx(tx_pos, chunk, buf.data());
+                } else {
+                    write_tx(tx_pos, chunk, silence.data());
+                }
+                tx_pos += uint64_t(chunk);
+            }
         }
         sleep_until_mono(mono_ns() + 1000000);
     }

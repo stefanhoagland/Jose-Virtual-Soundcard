@@ -35,8 +35,12 @@ int jvsd_subscribe(Jvsd* h, int local_channel, const char* tx_channel, const cha
 int jvsd_unsubscribe(Jvsd* h, int local_channel);
 void jvsd_destroy(Jvsd* h);
 /* Diagnostics */
-int jvsd_set_log_file(const char* path); /* call before jvsd_create */
+int jvsd_set_log_file(const char* path); /* also log to this file; NULL stops */
 void jvsd_net_summary(char* out, int len); /* control traffic per port */
+void jvsd_log_tail(char* out, int len); /* most recent log text */
+/* Clock for devices whose clock_socket is "inproc:<name>" (same process). */
+void jvsd_publish_clock(const char* name, int64_t clock_id, int64_t last_sync, int64_t shift, double freq_scale);
+void jvsd_set_state_dir(const char* path); /* call before jvsd_create */
 
 #ifdef __cplusplus
 }

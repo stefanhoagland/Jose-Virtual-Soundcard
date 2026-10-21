@@ -1,6 +1,7 @@
 // Publishes our PTP clock to Inferno over the usrvclock protocol: a Unix
 // datagram socket that sends a small "overlay" (offset + rate against the
-// monotonic clock) to every client that says hello.
+// monotonic clock) to every client that says hello. A path "inproc:<name>"
+// publishes inside this process instead (no socket; works in sandboxes).
 #pragma once
 #include <atomic>
 #include <string>

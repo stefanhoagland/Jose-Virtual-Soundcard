@@ -421,6 +421,30 @@ impl BlockingClient {
 /// 
 /// Overlay updates are sent to [`tokio::sync::broadcast`] channel which can be subscribed using [`AsyncClient::subscribe`].
 /// Errors are passed to `error_handler` callback specified when starting the client.
+/// Server "path" prefix meaning: the clock comes from this same process, published
+/// with [`publish_inproc`] under the name after the prefix. No socket is used, which
+/// matters inside sandboxes (e.g. a Core Audio driver).
+pub const INPROC_PREFIX: &str = "inproc:";
+
+#[cfg(feature="tokio")]
+fn inproc_sender(name: &str) -> tokio::sync::watch::Sender<Option<ClockOverlay>> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static REG: OnceLock<Mutex<HashMap<String, tokio::sync::watch::Sender<Option<ClockOverlay>>>>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .entry(name.to_owned())
+        .or_insert_with(|| tokio::sync::watch::Sender::new(None))
+        .clone()
+}
+
+/// Publishes a clock overlay to in-process clients started with path `inproc:<name>`.
+#[cfg(feature="tokio")]
+pub fn publish_inproc(name: &str, overlay: ClockOverlay) {
+    inproc_sender(name).send_replace(Some(overlay));
+}
+
 #[cfg(feature="tokio")]
 pub struct AsyncClient {
     shutdown: tokio::sync::oneshot::Sender<()>,
@@ -443,7 +467,27 @@ impl AsyncClient {
 
         let path = path.to_owned();
         //println!("path: {path:?}");
-        let join_handle = if nix::sys::stat::stat(&path).map(|stat|(stat.st_mode & S_IFMT)==S_IFCHR).unwrap_or(false) {
+        let join_handle = if let Some(name) = path.to_str().and_then(|p| p.strip_prefix(INPROC_PREFIX)) {
+            // Clock published by the same process (see `publish_inproc`).
+            let mut rx = inproc_sender(name).subscribe();
+            tokio::spawn(async move {
+                let forward = async {
+                    loop {
+                        let v = *rx.borrow_and_update();
+                        if v.is_some() {
+                            let _ = tx.send(v);
+                        }
+                        if rx.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                };
+                tokio::select! {
+                    _ = forward => {},
+                    _ = shutdown_rx => {}
+                };
+            })
+        } else if nix::sys::stat::stat(&path).map(|stat|(stat.st_mode & S_IFMT)==S_IFCHR).unwrap_or(false) {
             //println!("opening device");
             let fd = nix::fcntl::open(&path, OFlag::O_RDWR, Mode::empty()).unwrap_or_else(|_| {
                 // retry without writing, however, freq_scale_including_hw will return invalid values

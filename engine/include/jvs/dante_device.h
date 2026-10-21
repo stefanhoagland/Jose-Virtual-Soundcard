@@ -29,6 +29,10 @@ struct DanteConfig {
     PtpMode ptp_mode = PtpMode::Auto;
     int process_id = 0;          // >= 1 to run several devices on one IP (tests)
     int alt_port = 0;
+    // Another component (the Core Audio driver) writes the audio to send.
+    // The device then only clears what has been sent, so a stopped writer
+    // leads to silence instead of a repeating buffer.
+    bool external_tx = false;
 };
 
 enum class DanteState { Stopped, WaitingForClock, Starting, Running, Failed };
@@ -57,6 +61,8 @@ public:
     bool write_tx(uint64_t t, int frames, const float* in);
 
     int buffer_frames() const { return buffer_frames_; }
+    // Monotonic time (ns) at which media time t happens. False if unlocked.
+    bool mono_from_media(uint64_t t, int64_t& mono_ns) const;
     // UDP port Dante Controller uses for routing (4440 unless it was taken).
     int arc_port() const { return arc_port_; }
 
