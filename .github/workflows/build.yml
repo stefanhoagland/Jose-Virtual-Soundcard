@@ -14,6 +14,9 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Rust targets for Apple Silicon + Intel
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
       - name: Build (Apple Silicon + Intel)
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -25,6 +28,14 @@ jobs:
           lipo -info build/jvs-poc
           ./build/jvs-poc help
           ./build/jvs-poc interfaces
+      # Runs the Dante device code on a real Mac. GitHub's Macs may not pass
+      # multicast between processes, so this one is informational for now.
+      - name: Dante device test on macOS (informational)
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          IF=$(route -n get default | awk '/interface:/{print $2}')
+          sudo ./build/jvs_capi_test "$IF" 1
       - name: Package
         run: |
           mkdir -p dist
@@ -35,7 +46,7 @@ jobs:
           name: jvs-poc-macos
           path: jvs-poc-macos.tar.gz
       - name: Build the app
-        run: VERSION=0.1.0 BUILD=${{ github.run_number }} ./scripts/build-app.sh
+        run: VERSION=0.2.0 BUILD=${{ github.run_number }} ./scripts/build-app.sh
       - name: Check the app bundle
         run: |
           APP="dist/Jose Virtual Soundcard.app"
@@ -72,13 +83,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
       - name: Build
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j4
       - name: Unit tests
         run: ./build/jvs_tests
-      - name: Loopback test (fake clock, send 16 channels, receive 8)
-        run: sudo ./tests/loopback.sh build/jvs-poc
+      - name: Dante loopback, PTPv1 clock (two devices route tones to each other)
+        timeout-minutes: 5
+        run: sudo ./build/jvs_dante_test "$(ip -4 route show default | awk '{print $5; exit}')" 1
+      - name: Dante loopback, PTPv2 clock
+        timeout-minutes: 5
+        run: sudo ./build/jvs_dante_test "$(ip -4 route show default | awk '{print $5; exit}')" 2
       - name: App engine test (the C interface the Mac app uses)
-        run: sudo ./build/jvs_capi_test "$(ip -4 route show default | awk '{print $5; exit}')"
+        timeout-minutes: 5
+        run: sudo ./build/jvs_capi_test "$(ip -4 route show default | awk '{print $5; exit}')" 2

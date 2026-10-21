@@ -12,11 +12,14 @@ namespace jvs {
 
 using namespace ptpmsg;
 
-bool TestMaster::start(const NetInterface& iface, uint8_t domain) {
+bool TestMaster::start(const NetInterface& iface, uint8_t domain, int version) {
     iface_ = iface;
     domain_ = domain;
+    version_ = version;
     std::random_device rd;
     for (auto& b : id_) b = uint8_t(rd());
+    for (int i = 0; i < 6; ++i) uuid_[size_t(i)] = id_[size_t(i)];
+    uuid_[0] &= 0xFE;
     if (!ev_.open(319) || !gen_.open(320)) return false;
     uint32_t g;
     parse_ipv4("224.0.1.129", g);
@@ -46,6 +49,40 @@ void TestMaster::tx_loop() {
     int64_t next_sync = mono_ns(), next_ann = mono_ns();
     while (run_) {
         int64_t now = mono_ns();
+        if (version_ == 1) {
+            // PTPv1: Sync (two-step) + Follow_Up every 250 ms, no Announce.
+            if (now >= next_sync) {
+                uint8_t b[ptpv1::kSyncLen];
+                ptpv1::Header h;
+                h.message_type = 1;
+                h.uuid = uuid_;
+                h.seq = sync_seq;
+                h.control = ptpv1::Sync;
+                h.flags = ptpv1::kFlagAssist;
+                ptpv1::write_header(b, h);
+                ptpv1::SyncBody body;
+                body.gm_uuid = uuid_;
+                body.gm_stratum = 4;
+                body.sync_interval = -2;
+                ptpv1::write_sync(b, body);
+                int64_t t1 = tai_now();
+                ev_.send_to(b, sizeof b, group_, 319);
+                uint8_t f[ptpv1::kFollowUpLen];
+                h.message_type = 2;
+                h.control = ptpv1::FollowUp;
+                h.flags = 0;
+                ptpv1::write_header(f, h);
+                std::memset(f + 40, 0, sizeof f - 40);
+                f[42] = uint8_t(sync_seq >> 8);
+                f[43] = uint8_t(sync_seq);
+                ptpv1::write_timestamp(f + 44, t1);
+                gen_.send_to(f, sizeof f, group_, 320);
+                sync_seq++;
+                next_sync += 250000000LL;
+            }
+            sleep_until_mono(next_sync);
+            continue;
+        }
         if (now >= next_ann) {
             uint8_t b[64];
             Header h;
@@ -102,6 +139,28 @@ void TestMaster::rx_loop() {
         int64_t rx = 0;
         int n = ev_.recv(buf, sizeof buf, &rx);
         if (n <= 0) continue;
+        if (version_ == 1) {
+            ptpv1::Header q;
+            if (!ptpv1::parse_header(buf, n, q) || q.control != ptpv1::DelayReq || q.uuid == uuid_) continue;
+            int64_t t4 = tai_now() - (mono_ns() - rx);
+            uint8_t r[ptpv1::kDelayRespLen];
+            ptpv1::Header h;
+            h.message_type = 2;
+            h.uuid = uuid_;
+            h.seq = q.seq;
+            h.control = ptpv1::DelayResp;
+            ptpv1::write_header(r, h);
+            std::memset(r + 40, 0, sizeof r - 40);
+            ptpv1::write_timestamp(r + 40, t4);
+            r[49] = 1;
+            std::memcpy(r + 50, q.uuid.data(), 6);
+            r[56] = uint8_t(q.port >> 8);
+            r[57] = uint8_t(q.port);
+            r[58] = uint8_t(q.seq >> 8);
+            r[59] = uint8_t(q.seq);
+            gen_.send_to(r, sizeof r, group_, 320);
+            continue;
+        }
         Header h;
         if (!parse_header(buf, n, h) || h.type != DelayReq || h.domain != domain_) continue;
         int64_t t4 = tai_now() - (mono_ns() - rx);

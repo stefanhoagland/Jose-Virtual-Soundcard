@@ -1,0 +1,17 @@
+[package]
+name = "jvs_dante"
+description = "Jose Virtual Soundcard: C interface to the Inferno Dante implementation"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+inferno_aoip = { path = "../third_party/inferno/inferno_aoip" }
+usrvclock = { path = "../third_party/inferno/usrvclock-rs" }
+tokio = { version = "1.36", features = ["rt-multi-thread", "sync", "time", "macros"] }
+log = "0.4"
+env_logger = "0.11.8"
+atomic = "0.6"

@@ -129,21 +129,110 @@ void write_announce(uint8_t* p, const AnnounceBody& a) {
 
 }  // namespace ptpmsg
 
+namespace ptpv1 {
+
+bool parse_header(const uint8_t* p, int len, Header& h) {
+    if (len < kHeaderLen) return false;
+    if (rd16(p) != 1) return false;  // versionPTP
+    std::memcpy(h.subdomain, p + 4, 16);
+    h.message_type = p[20];
+    std::memcpy(h.uuid.data(), p + 22, 6);
+    h.port = rd16(p + 28);
+    h.seq = rd16(p + 30);
+    h.control = p[32];
+    h.flags = rd16(p + 34);
+    return true;
+}
+
+void write_header(uint8_t* p, const Header& h) {
+    std::memset(p, 0, kHeaderLen);
+    wr16(p, 1);      // versionPTP
+    wr16(p + 2, 1);  // versionNetwork
+    std::memcpy(p + 4, h.subdomain, 16);
+    p[20] = h.message_type;
+    p[21] = 1;  // Ethernet
+    std::memcpy(p + 22, h.uuid.data(), 6);
+    wr16(p + 28, h.port);
+    wr16(p + 30, h.seq);
+    p[32] = h.control;
+    wr16(p + 34, h.flags);
+}
+
+int64_t read_timestamp(const uint8_t* p) {
+    uint32_t sec = uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+    int32_t ns = int32_t(uint32_t(p[4]) << 24 | uint32_t(p[5]) << 16 | uint32_t(p[6]) << 8 | p[7]);
+    return int64_t(sec) * 1000000000LL + ns;
+}
+
+void write_timestamp(uint8_t* p, int64_t ns) {
+    uint32_t sec = uint32_t(ns / 1000000000LL);
+    uint32_t n = uint32_t(ns % 1000000000LL);
+    for (int i = 0; i < 4; ++i) {
+        p[i] = uint8_t(sec >> (24 - 8 * i));
+        p[4 + i] = uint8_t(n >> (24 - 8 * i));
+    }
+}
+
+bool parse_sync(const uint8_t* p, int len, SyncBody& b) {
+    if (len < kSyncLen) return false;
+    b.origin_ns = read_timestamp(p + 40);
+    std::memcpy(b.gm_uuid.data(), p + 54, 6);
+    b.gm_stratum = p[67];
+    b.gm_variance = int16_t(rd16(p + 74));
+    b.gm_preferred = p[77] != 0;
+    b.sync_interval = int8_t(p[83]);
+    return true;
+}
+
+void write_sync(uint8_t* p, const SyncBody& b) {
+    std::memset(p + kHeaderLen, 0, kSyncLen - kHeaderLen);
+    write_timestamp(p + 40, b.origin_ns);
+    p[53] = 1;
+    std::memcpy(p + 54, b.gm_uuid.data(), 6);
+    wr16(p + 60, 1);
+    p[67] = b.gm_stratum;
+    std::memcpy(p + 68, "DFLT", 4);
+    wr16(p + 74, uint16_t(b.gm_variance));
+    p[77] = b.gm_preferred ? 1 : 0;
+    p[83] = uint8_t(b.sync_interval);
+    p[95] = b.gm_stratum;
+    std::memcpy(p + 96, "DFLT", 4);
+    p[101] = 1;
+    std::memcpy(p + 102, b.gm_uuid.data(), 6);
+    wr16(p + 110, 1);
+}
+
+}  // namespace ptpv1
+
 using namespace ptpmsg;
+
+namespace {
+ClockIdentity identity_from_uuid(const std::array<uint8_t, 6>& u) {
+    return {u[0], u[1], u[2], u[3], u[4], u[5], 0, 0};
+}
+std::string uuid_to_string(const ClockIdentity& id) {
+    char buf[24];
+    std::snprintf(buf, sizeof buf, "%02X-%02X-%02X-%02X-%02X-%02X", id[0], id[1], id[2], id[3], id[4], id[5]);
+    return buf;
+}
+}  // namespace
 
 PtpFollower::PtpFollower() = default;
 PtpFollower::~PtpFollower() { stop(); }
 
-bool PtpFollower::start(const NetInterface& iface, uint8_t domain) {
+bool PtpFollower::start(const NetInterface& iface, uint8_t domain, PtpMode mode) {
     stop();
     iface_ = iface;
     domain_ = domain;
+    mode_ = mode;
     if (iface.has_mac) {
-        my_identity_ = clock_identity_from_mac(iface.mac);
+        my_uuid_ = iface.mac;
     } else {
         std::random_device rd;
-        for (auto& b : my_identity_) b = uint8_t(rd());
+        for (auto& b : my_uuid_) b = uint8_t(rd());
+        my_uuid_[0] &= 0xFE;
     }
+    my_identity_ = clock_identity_from_mac(my_uuid_);
     uint32_t group;
     parse_ipv4(kPtpGroup, group);
     if (!ev_sock_.open(kEventPort) || !gen_sock_.open(kGeneralPort)) {
@@ -209,8 +298,13 @@ void PtpFollower::general_loop() {
 }
 
 void PtpFollower::handle(const uint8_t* buf, int n, int64_t rx_mono, uint32_t src, bool) {
+    if (n >= 2 && buf[0] == 0 && buf[1] == 1) {
+        if (mode_ != PtpMode::V2) handle_v1(buf, n, rx_mono, src);
+        return;
+    }
+    if (mode_ == PtpMode::V1) return;
     Header h;
-    if (!parse_header(buf, n, h)) return;  // also drops PTPv1 (native Dante)
+    if (!parse_header(buf, n, h)) return;
     if (h.domain != domain_) return;
     if (h.src_clock == my_identity_) return;  // our own Delay_Req looped back
 
@@ -221,10 +315,10 @@ void PtpFollower::handle(const uint8_t* buf, int n, int64_t rx_mono, uint32_t sr
         AnnounceBody a;
         if (!parse_announce(buf, n, a)) return;
         auto it = std::find_if(masters_.begin(), masters_.end(), [&](const Master& m) {
-            return m.clock == h.src_clock && m.port == h.src_port;
+            return m.version == 2 && m.clock == h.src_clock && m.port == h.src_port;
         });
         if (it == masters_.end()) {
-            masters_.push_back({h.src_clock, h.src_port, src, a, now});
+            masters_.push_back({2, h.src_clock, h.src_port, src, a, now});
         } else {
             it->announce = a;
             it->ip = src;
@@ -234,10 +328,7 @@ void PtpFollower::handle(const uint8_t* buf, int n, int64_t rx_mono, uint32_t sr
         return;
     }
 
-    if (current_ < 0) return;
-    const Master& cm = masters_[size_t(current_)];
-    bool from_master = cm.clock == h.src_clock && cm.port == h.src_port;
-    if (!from_master) return;
+    if (!from_current(2, h.src_clock, h.src_port)) return;
 
     int64_t corr = h.correction_ns_x16 >> 16;
     if (h.type == Sync) {
@@ -263,24 +354,89 @@ void PtpFollower::handle(const uint8_t* buf, int n, int64_t rx_mono, uint32_t sr
         // Master asks us to use this interval between Delay_Reqs.
         int li = std::clamp<int>(h.log_interval, -4, 4);
         dreq_interval_ns_ = std::max<int64_t>(int64_t(std::ldexp(1e9, li)), 250000000LL);
-        if (samples_.size() < 2) return;
-        int64_t t4 = read_timestamp(buf + 34).to_ns() - corr;
-        double m3 = double(dreq_t3_ - x0_);
-        double a = m_a_.load(), b = m_b_.load();
-        // Model without path delay at t3 (see fit_model()).
-        int64_t no_delay = dreq_t3_ + y0_ + int64_t(std::llround(a - double(path_delay_) + b * m3));
-        int64_t d = (t4 - no_delay) / 2;
-        if (d < 0 || d > 10000000) return;  // nonsense, ignore
-        // Smooth: fast at first, then slow.
-        if (!have_delay_) {
-            path_delay_ = d;
-            have_delay_ = true;
+        on_delay_resp(read_timestamp(buf + 34).to_ns() - corr);
+    }
+}
+
+bool PtpFollower::from_current(uint8_t version, const ClockIdentity& c, uint16_t port) const {
+    if (current_ < 0) return false;
+    const Master& m = masters_[size_t(current_)];
+    return m.version == version && m.clock == c && m.port == port;
+}
+
+void PtpFollower::on_delay_resp(int64_t t4) {
+    if (samples_.size() < 2) return;
+    double m3 = double(dreq_t3_ - x0_);
+    double a = m_a_.load(), b = m_b_.load();
+    // Model without path delay at t3 (see fit_model()).
+    int64_t no_delay = dreq_t3_ + y0_ + int64_t(std::llround(a - double(path_delay_) + b * m3));
+    int64_t d = (t4 - no_delay) / 2;
+    if (d < 0 || d > 10000000) return;  // nonsense, ignore
+    // Median of the last few measurements: one late packet shouldn't move it.
+    delays_.push_back(d);
+    if (delays_.size() > 9) delays_.erase(delays_.begin());
+    std::vector<int64_t> sorted = delays_;
+    std::sort(sorted.begin(), sorted.end());
+    path_delay_ = sorted[sorted.size() / 2];
+    have_delay_ = true;
+    st_.delay_resps++;
+    st_.path_delay_ns = path_delay_;
+    fit_model();
+}
+
+void PtpFollower::handle_v1(const uint8_t* buf, int n, int64_t rx_mono, uint32_t src) {
+    ptpv1::Header h;
+    if (!ptpv1::parse_header(buf, n, h)) return;
+    if (domain_ == 0 && std::strncmp(h.subdomain, "_DFLT", 16) != 0) return;
+    if (h.uuid == my_uuid_) return;  // our own Delay_Req looped back
+    ClockIdentity id = identity_from_uuid(h.uuid);
+
+    std::lock_guard<std::mutex> lk(mu_);
+    int64_t now = mono_ns();
+
+    if (h.control == ptpv1::Sync) {
+        ptpv1::SyncBody b;
+        if (!ptpv1::parse_sync(buf, n, b)) return;
+        // PTPv1 has no Announce: every Sync also describes its clock.
+        AnnounceBody a;
+        a.priority1 = b.gm_preferred ? 0 : 128;
+        a.clock_class = b.gm_stratum;
+        a.clock_accuracy = 0;
+        a.variance = uint16_t(int32_t(b.gm_variance) + 32768);
+        a.gm_identity = identity_from_uuid(b.gm_uuid);
+        auto it = std::find_if(masters_.begin(), masters_.end(), [&](const Master& m) {
+            return m.version == 1 && m.clock == id && m.port == h.port;
+        });
+        if (it == masters_.end()) {
+            masters_.push_back({1, id, h.port, src, a, now});
         } else {
-            path_delay_ += (d - path_delay_) / 8;
+            it->announce = a;
+            it->ip = src;
+            it->last_seen_mono = now;
         }
-        st_.delay_resps++;
-        st_.path_delay_ns = path_delay_;
-        fit_model();
+        select_master(now);
+        if (!from_current(1, id, h.port)) return;
+        if (h.flags & ptpv1::kFlagAssist) {
+            pending_seq_ = h.seq;
+            pending_t2_ = rx_mono;
+            pending_corr_ = 0;
+            pending_valid_ = true;
+        } else {
+            on_sync_complete(b.origin_ns, rx_mono, 0);
+        }
+    } else if (h.control == ptpv1::FollowUp) {
+        if (n < ptpv1::kFollowUpLen || !from_current(1, id, h.port)) return;
+        uint16_t assoc = rd16(buf + 42);
+        if (!pending_valid_ || assoc != pending_seq_) return;
+        pending_valid_ = false;
+        on_sync_complete(ptpv1::read_timestamp(buf + 44), pending_t2_, 0);
+    } else if (h.control == ptpv1::DelayResp) {
+        if (n < ptpv1::kDelayRespLen || !from_current(1, id, h.port)) return;
+        std::array<uint8_t, 6> req;
+        std::memcpy(req.data(), buf + 50, 6);
+        if (req != my_uuid_ || !dreq_outstanding_ || rd16(buf + 58) != dreq_seq_) return;
+        dreq_outstanding_ = false;
+        on_delay_resp(ptpv1::read_timestamp(buf + 40));
     }
 }
 
@@ -291,7 +447,8 @@ void PtpFollower::select_master(int64_t now) {
     int best = -1;
     auto key = [](const Master& m) {
         const auto& a = m.announce;
-        return std::make_tuple(a.priority1, a.clock_class, a.clock_accuracy, a.variance, a.priority2,
+        // PTPv1 first: it's the clock every Dante device follows.
+        return std::make_tuple(m.version, a.priority1, a.clock_class, a.clock_accuracy, a.variance, a.priority2,
                                a.gm_identity, a.steps_removed, m.clock, m.port);
     };
     for (size_t i = 0; i < masters_.size(); ++i)
@@ -304,20 +461,24 @@ void PtpFollower::select_master(int64_t now) {
         return;
     }
     const Master& m = masters_[size_t(best)];
-    if (!st_.have_master || m.clock != last_clock_ || m.port != last_port_) {
+    if (!st_.have_master || m.version != last_version_ || m.clock != last_clock_ || m.port != last_port_) {
         // New master: start the clock fit again.
         samples_.clear();
         have_origin_ = false;
         have_delay_ = false;
+        delays_.clear();
         pending_valid_ = false;
         locked_ = false;
         next_dreq_ = 0;
     }
     last_clock_ = m.clock;
     last_port_ = m.port;
+    last_version_ = m.version;
+    st_.version = m.version;
     st_.have_master = true;
-    st_.master = clock_identity_to_string(m.clock);
-    st_.grandmaster = clock_identity_to_string(m.announce.gm_identity);
+    st_.master = m.version == 1 ? uuid_to_string(m.clock) : clock_identity_to_string(m.clock);
+    st_.grandmaster =
+        m.version == 1 ? uuid_to_string(m.announce.gm_identity) : clock_identity_to_string(m.announce.gm_identity);
     st_.master_ip = m.ip;
 }
 
@@ -414,6 +575,24 @@ void PtpFollower::maybe_send_delay_req(int64_t now) {
     if (now < next_dreq_) return;
     // Jitter the interval a little so many followers don't line up.
     next_dreq_ = now + dreq_interval_ns_ / 2 + int64_t(rng_() % uint64_t(dreq_interval_ns_));
+    uint32_t group;
+    parse_ipv4(kPtpGroup, group);
+    if (masters_[size_t(current_)].version == 1) {
+        uint8_t b1[ptpv1::kSyncLen];
+        ptpv1::Header h1;
+        h1.message_type = 1;
+        h1.uuid = my_uuid_;
+        h1.port = 1;
+        h1.seq = ++dreq_seq_;
+        h1.control = ptpv1::DelayReq;
+        ptpv1::write_header(b1, h1);
+        ptpv1::SyncBody body;
+        body.gm_uuid = my_uuid_;
+        ptpv1::write_sync(b1, body);
+        dreq_t3_ = mono_ns();
+        dreq_outstanding_ = ev_sock_.send_to(b1, sizeof b1, group, kEventPort);
+        return;
+    }
     uint8_t buf[44];
     Header h;
     h.type = DelayReq;
@@ -426,8 +605,6 @@ void PtpFollower::maybe_send_delay_req(int64_t now) {
     h.log_interval = 0x7F;
     write_header(buf, h);
     write_timestamp(buf + 34, Timestamp{});
-    uint32_t group;
-    parse_ipv4(kPtpGroup, group);
     dreq_t3_ = mono_ns();
     dreq_outstanding_ = ev_sock_.send_to(buf, sizeof buf, group, kEventPort);
 }
@@ -460,6 +637,24 @@ int64_t PtpFollower::mono_from_ptp(int64_t ptp) const {
         // ptp = mono + y0 + a + b*(mono - x0)  =>  solve for mono.
         double q = double(ptp - y0 - x0) - a;
         return x0 + int64_t(std::llround(q / (1.0 + b)));
+    }
+}
+
+bool PtpFollower::overlay(int64_t& last_sync, int64_t& shift, double& freq_scale) const {
+    if (!locked_) return false;
+    for (;;) {
+        uint32_t s0 = model_seq_.load(std::memory_order_acquire);
+        if (s0 & 1) continue;
+        int64_t x0 = m_x0_.load(std::memory_order_relaxed);
+        int64_t y0 = m_y0_.load(std::memory_order_relaxed);
+        double a = m_a_.load(std::memory_order_relaxed);
+        double b = m_b_.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (model_seq_.load(std::memory_order_relaxed) != s0) continue;
+        last_sync = x0;
+        shift = y0 + int64_t(std::llround(a));
+        freq_scale = b;
+        return true;
     }
 }
 

@@ -26,51 +26,60 @@ struct NetPort: Identifiable, Hashable {
     var label: String { "\(name)  (\(ip))" }
 }
 
-struct StreamItem: Identifiable, Hashable {
-    let key: String
-    let name: String
-    let addr: String
-    let origin: String
-    let channels: Int
-    let sampleRate: Int
-    let bits: Int
-    let ptimeMs: Double
-    var id: String { key }
-    var detail: String {
-        "\(channels) ch · \(bits)-bit · \(sampleRate / 1000) kHz · \(addr) · from \(origin)"
+enum ClockChoice: Int, CaseIterable, Identifiable {
+    case automatic = 0, ptpv1 = 1, ptpv2 = 2
+    var id: Int { rawValue }
+    var label: String {
+        switch self {
+        case .automatic: return "Automatic"
+        case .ptpv1: return "PTPv1 (Dante)"
+        case .ptpv2: return "PTPv2 (AES67)"
+        }
     }
 }
+
+let sampleRates = [44100, 48000, 88200, 96000]
+let latencyChoicesMs = [2.0, 4.0, 5.0, 10.0, 20.0, 40.0]
+let channelChoices = [2, 8, 16, 32, 48, 64]
 
 /// Everything the window shows. Polls the C engine a few times a second.
 final class EngineModel: ObservableObject {
     private let session = jvs_create()
     private var timer: Timer?
+    private let defaults = UserDefaults.standard
 
     @Published var ports: [NetPort] = []
-    @Published var selectedPort: String = UserDefaults.standard.string(forKey: "port") ?? ""
     @Published var running = false
     @Published var errorText: String?
-
-    // Clock
-    @Published var clock = jvs_clock_status()
-
-    // Receive
-    @Published var streams: [StreamItem] = []
-    @Published var selectedStream: String?
-    @Published var latencyMs: Double = 4
-    @Published var playOnSpeakers = true
-    @Published var playLeft = 1
-    @Published var playRight = 2
-    @Published var record = false
-    @Published var rx = jvs_rx_status()
+    @Published var status = jvs_status()
     @Published var peaks: [Float] = []
+    @Published var lastRecording: String?
 
-    // Send
-    @Published var sendName = "JVS Test"
-    @Published var sendFlows = 1
-    @Published var tx = jvs_tx_status()
+    // Settings (saved between launches)
+    @Published var selectedPort: String { didSet { defaults.set(selectedPort, forKey: "port") } }
+    @Published var deviceName: String { didSet { defaults.set(deviceName, forKey: "deviceName") } }
+    @Published var sampleRate: Int { didSet { defaults.set(sampleRate, forKey: "sampleRate") } }
+    @Published var latencyMs: Double { didSet { defaults.set(latencyMs, forKey: "latencyMs") } }
+    @Published var rxChannels: Int { didSet { defaults.set(rxChannels, forKey: "rxChannels") } }
+    @Published var txChannels: Int { didSet { defaults.set(txChannels, forKey: "txChannels") } }
+    @Published var clock: ClockChoice { didSet { defaults.set(clock.rawValue, forKey: "clock") } }
+
+    // Test tools
+    @Published var monitorLeft = 1
+    @Published var monitorRight = 2
 
     init() {
+        selectedPort = defaults.string(forKey: "port") ?? ""
+        deviceName = defaults.string(forKey: "deviceName") ?? "Jose-Virtual-Soundcard"
+        let rate = defaults.integer(forKey: "sampleRate")
+        sampleRate = sampleRates.contains(rate) ? rate : 48000
+        let lat = defaults.double(forKey: "latencyMs")
+        latencyMs = latencyChoicesMs.contains(lat) ? lat : 10
+        let rx = defaults.object(forKey: "rxChannels") as? Int ?? 64
+        rxChannels = channelChoices.contains(rx) ? rx : 64
+        let tx = defaults.object(forKey: "txChannels") as? Int ?? 64
+        txChannels = channelChoices.contains(tx) ? tx : 64
+        clock = ClockChoice(rawValue: defaults.integer(forKey: "clock")) ?? .automatic
         refreshPorts()
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             self?.poll()
@@ -91,10 +100,31 @@ final class EngineModel: ObservableObject {
         }
     }
 
+    /// The name as Dante Controller will show it.
+    var cleanName: String {
+        var out = [CChar](repeating: 0, count: 32)
+        jvs_clean_name(deviceName, &out, Int32(out.count))
+        return String(cString: out)
+    }
+
     func start() {
         guard !selectedPort.isEmpty else { return }
-        UserDefaults.standard.set(selectedPort, forKey: "port")
-        if jvs_start(session, selectedPort) == 0 {
+        let name = cleanName
+        deviceName = name
+        let ok: Int32 = name.withCString { namePtr in
+            selectedPort.withCString { portPtr in
+                var cfg = jvs_config()
+                cfg.name = namePtr
+                cfg.iface = portPtr
+                cfg.rx_channels = Int32(rxChannels)
+                cfg.tx_channels = Int32(txChannels)
+                cfg.sample_rate = Int32(sampleRate)
+                cfg.latency_us = Int32(latencyMs * 1000)
+                cfg.ptp_mode = Int32(clock.rawValue)
+                return jvs_start(session, &cfg)
+            }
+        }
+        if ok == 0 {
             running = true
             errorText = nil
         } else {
@@ -106,105 +136,99 @@ final class EngineModel: ObservableObject {
     func stop() {
         jvs_stop(session)
         running = false
-        streams = []
-        selectedStream = nil
-        rx = jvs_rx_status()
-        tx = jvs_tx_status()
+        status = jvs_status()
         peaks = []
+    }
+
+    // MARK: Status text
+
+    var deviceText: String {
+        if !running { return "Off" }
+        switch Int(status.state) {
+        case Int(JVS_WAITING_FOR_CLOCK): return "Waiting for the Dante clock"
+        case Int(JVS_STARTING): return "Starting"
+        case Int(JVS_RUNNING): return "On the network as “\(cString(status.name))”"
+        case Int(JVS_FAILED): return "Stopped with an error"
+        default: return "Off"
+        }
+    }
+
+    var deviceColor: NSColor {
+        if !running { return .tertiaryLabelColor }
+        switch Int(status.state) {
+        case Int(JVS_RUNNING): return .systemGreen
+        case Int(JVS_FAILED): return .systemRed
+        default: return .systemOrange
+        }
     }
 
     var clockText: String {
         if !running { return "Not started" }
-        if clock.locked != 0 { return "Locked" }
-        if clock.have_master != 0 { return "Locking…" }
-        return "Waiting for a PTP clock"
+        let v = status.ptp_version > 0 ? "PTPv\(status.ptp_version) " : ""
+        if status.locked != 0 { return "\(v)locked" }
+        if status.have_master != 0 { return "\(v)locking…" }
+        return "Looking for a clock leader…"
     }
 
-    var clockColor: NSColor {
-        if !running { return .tertiaryLabelColor }
-        if clock.locked != 0 { return .systemGreen }
-        return .systemOrange
+    // MARK: Test tools
+
+    func setTones(_ on: Bool) {
+        jvs_set_tones(session, on ? 1 : 0)
     }
 
-    // MARK: Receive
-
-    var selectedStreamItem: StreamItem? { streams.first { $0.key == selectedStream } }
-
-    func startReceive() {
-        guard let s = selectedStreamItem else { return }
-        var path = ""
-        if record {
-            path = recordingPath(for: s.name)
+    func setMonitor(_ on: Bool) {
+        if jvs_set_monitor(session, on ? 1 : 0, Int32(monitorLeft), Int32(monitorRight)) != 0 {
+            errorText = String(cString: jvs_last_error(session))
         }
-        let ok = jvs_rx_start(session, s.key, latencyMs, playOnSpeakers ? 1 : 0, Int32(playLeft),
-                              Int32(playRight), path)
-        errorText = ok == 0 ? nil : String(cString: jvs_last_error(session))
     }
 
-    func stopReceive() {
-        jvs_rx_stop(session)
+    func updateMonitorChannels() {
+        if status.monitoring != 0 { setMonitor(true) }
     }
 
-    private func recordingPath(for name: String) -> String {
+    func startRecording() {
+        let path = recordingPath()
+        if jvs_record_start(session, path) == 0 {
+            lastRecording = path
+            errorText = nil
+        } else {
+            errorText = String(cString: jvs_last_error(session))
+        }
+    }
+
+    func stopRecording() {
+        jvs_record_stop(session)
+    }
+
+    private func recordingPath() -> String {
         let music = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first!
         let dir = music.appendingPathComponent("Jose Virtual Soundcard", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd HH.mm.ss"
-        let safe = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
-        return dir.appendingPathComponent("\(safe) \(f.string(from: Date())).wav").path
+        return dir.appendingPathComponent("Dante \(f.string(from: Date())).wav").path
     }
 
     func showRecording() {
-        let p = cString(rx.wav_path)
-        if !p.isEmpty {
+        if let p = lastRecording {
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)])
         }
-    }
-
-    // MARK: Send
-
-    func startSend() {
-        let ok = jvs_tx_start(session, sendName, 8, Int32(sendFlows), nil)
-        errorText = ok == 0 ? nil : String(cString: jvs_last_error(session))
-    }
-
-    func stopSend() {
-        jvs_tx_stop(session)
     }
 
     // MARK: Polling
 
     private func poll() {
         guard running else { return }
-        var c = jvs_clock_status()
-        jvs_get_clock(session, &c)
-        clock = c
-
-        var buf = [jvs_stream_info](repeating: jvs_stream_info(), count: 64)
-        let n = Int(jvs_get_streams(session, &buf, Int32(buf.count)))
-        let list = buf.prefix(n).map {
-            StreamItem(key: cString($0.key), name: cString($0.name), addr: cString($0.addr),
-                       origin: cString($0.origin), channels: Int($0.channels), sampleRate: Int($0.sample_rate),
-                       bits: Int($0.bits), ptimeMs: $0.ptime_ms)
-        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        if list != streams { streams = list }
-        if selectedStream == nil { selectedStream = streams.first?.key }
-
-        var r = jvs_rx_status()
-        jvs_get_rx(session, &r)
-        rx = r
-        let fresh = floatArray(r.peak_db, count: Int(r.channels))
+        var s = jvs_status()
+        jvs_get_status(session, &s)
+        status = s
+        let fresh = floatArray(s.peak_db, count: Int(s.rx_channels))
         // Meters fall back slowly so short peaks stay visible.
         if peaks.count != fresh.count {
             peaks = fresh
         } else {
             peaks = zip(peaks, fresh).map { max($1, $0 - 6) }
         }
-
-        var t = jvs_tx_status()
-        jvs_get_tx(session, &t)
-        tx = t
     }
 
     // MARK: Report
@@ -213,27 +237,22 @@ final class EngineModel: ObservableObject {
     func report() -> String {
         var lines: [String] = []
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
-        lines.append("Jose Virtual Soundcard test app \(v), macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
+        lines.append("Jose Virtual Soundcard test app \(v) (Dante mode), macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
         lines.append("Network port: \(selectedPort)")
-        lines.append(String(format: "Clock: %@, grandmaster %@ via %@, delay %.1f us, jitter %.1f us, rate %+.2f ppm, syncs %llu",
-                            clockText, cString(clock.grandmaster), cString(clock.master_ip), clock.delay_us,
-                            clock.jitter_us, clock.rate_ppm, clock.syncs))
-        lines.append("Streams found: \(streams.count)")
-        for s in streams { lines.append("  \(s.name): \(s.detail)") }
-        if rx.active != 0 {
-            lines.append(String(format: "Receiving \"%@\": %llu packets, lost %llu, missing %.2f%%, arrival %.0f us avg / %.0f us max, latency %.1f ms",
-                                cString(rx.stream_name), rx.packets, rx.lost, rx.missing_pct, rx.arrival_avg_us,
-                                rx.arrival_max_us, rx.latency_ms))
-            lines.append("  Levels: " + peaks.enumerated().map { String(format: "%d:%.0f", $0.offset + 1, $0.element) }
-                .joined(separator: " ") + " dBFS")
+        lines.append("Settings: name \(cleanName), \(rxChannels) in / \(txChannels) out, \(sampleRate) Hz, latency \(latencyMs) ms, clock \(clock.label)")
+        lines.append("Device: \(deviceText) (state \(status.state))")
+        lines.append(String(format: "Clock: %@, leader %@ via %@, delay %.1f us, jitter %.1f us, rate %+.2f ppm, syncs %llu",
+                            clockText, cString(status.grandmaster), cString(status.master_ip), status.delay_us,
+                            status.jitter_us, status.rate_ppm, status.syncs))
+        lines.append("Test tones: \(status.tones != 0 ? "on" : "off"), speakers: \(status.monitoring != 0 ? "on" : "off"), recording: \(status.recording != 0 ? "on" : "off")")
+        let active = peaks.enumerated().filter { $0.element > -100 }
+        if active.isEmpty {
+            lines.append("Received levels: all channels silent")
         } else {
-            lines.append("Receiving: off")
+            lines.append("Received levels: " + active.map { String(format: "%d:%.0f", $0.offset + 1, $0.element) }
+                .joined(separator: " ") + " dBFS (others silent)")
         }
-        if tx.active != 0 {
-            lines.append("Sending: \(tx.flows) flow(s) x \(tx.channels) ch, \(tx.packets) packets, late \(tx.late), resyncs \(tx.resyncs)")
-        } else {
-            lines.append("Sending: off")
-        }
+        if let e = errorText { lines.append("Error: \(e)") }
         return lines.joined(separator: "\n")
     }
 

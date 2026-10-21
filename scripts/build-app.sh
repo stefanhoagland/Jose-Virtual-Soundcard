@@ -13,6 +13,7 @@ APP="$OUT/$APP_NAME.app"
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
 cmake --build build -j4 --target jvs_engine
 lipo -info build/libjvs_engine.a
+lipo -info build/libjvs_dante.a
 
 rm -rf "$OUT"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -20,8 +21,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 for arch in arm64 x86_64; do
   swiftc -O -target "$arch-apple-macos12.0" -parse-as-library \
     -import-objc-header app/Bridging.h -Xcc -Iengine/include \
-    app/*.swift build/libjvs_engine.a -lc++ \
+    app/*.swift build/libjvs_engine.a build/libjvs_dante.a -lc++ -liconv \
     -framework AudioToolbox -framework CoreFoundation -framework AppKit -framework SwiftUI \
+    -framework SystemConfiguration -framework Security \
     -o "build/JoseVirtualSoundcard-$arch"
 done
 lipo -create build/JoseVirtualSoundcard-arm64 build/JoseVirtualSoundcard-x86_64 \

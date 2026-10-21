@@ -9,7 +9,7 @@ struct JoseVirtualSoundcardApp: App {
         WindowGroup("Jose Virtual Soundcard") {
             ContentView()
                 .environmentObject(model)
-                .frame(minWidth: 620, minHeight: 640)
+                .frame(minWidth: 640, minHeight: 680)
         }
     }
 }
@@ -21,13 +21,13 @@ struct ContentView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                networkBox
+                deviceBox
                 if let e = m.errorText {
                     Label(e, systemImage: "exclamationmark.triangle.fill")
                         .foregroundColor(.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                clockBox
+                statusBox
                 receiveBox
                 sendBox
                 HStack {
@@ -44,62 +44,108 @@ struct ContentView: View {
         }
     }
 
-    // MARK: Network
+    // MARK: Device settings
 
-    private var networkBox: some View {
-        GroupBox(label: Text("Network").font(.headline)) {
-            HStack {
-                Picker("Port", selection: $m.selectedPort) {
-                    ForEach(m.ports) { p in Text(p.label).tag(p.name) }
+    private var deviceBox: some View {
+        GroupBox(label: Text("Dante device").font(.headline)) {
+            VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        TextField("Name in Dante Controller", text: $m.deviceName)
+                            .frame(width: 240)
+                        Picker("Network port", selection: $m.selectedPort) {
+                            ForEach(m.ports) { p in Text(p.label).tag(p.name) }
+                        }
+                        .frame(maxWidth: 300)
+                        Button {
+                            m.refreshPorts()
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .help("Look for network ports again")
+                    }
+                    HStack(spacing: 16) {
+                        Picker("Sample rate", selection: $m.sampleRate) {
+                            ForEach(sampleRates, id: \.self) { r in
+                                Text(r % 1000 == 0 ? "\(r / 1000) kHz" : String(format: "%.1f kHz", Double(r) / 1000)).tag(r)
+                            }
+                        }
+                        .frame(width: 190)
+                        Picker("Latency", selection: $m.latencyMs) {
+                            ForEach(latencyChoicesMs, id: \.self) { v in Text("\(Int(v)) ms").tag(v) }
+                        }
+                        .frame(width: 150)
+                        Picker("Clock", selection: $m.clock) {
+                            ForEach(ClockChoice.allCases) { c in Text(c.label).tag(c) }
+                        }
+                        .frame(width: 200)
+                    }
+                    HStack(spacing: 16) {
+                        Picker("Receive channels", selection: $m.rxChannels) {
+                            ForEach(channelChoices, id: \.self) { Text("\($0)").tag($0) }
+                        }
+                        .frame(width: 200)
+                        Picker("Send channels", selection: $m.txChannels) {
+                            ForEach(channelChoices, id: \.self) { Text("\($0)").tag($0) }
+                        }
+                        .frame(width: 180)
+                    }
                 }
-                .frame(maxWidth: 320)
                 .disabled(m.running)
-                Button {
-                    m.refreshPorts()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .help("Look for network ports again")
-                .disabled(m.running)
-                Spacer()
-                if m.running {
-                    Button("Stop") { m.stop() }
-                } else {
-                    Button("Start") { m.start() }
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(m.selectedPort.isEmpty)
+                HStack {
+                    Text(m.running
+                         ? "Stop the device to change these settings."
+                         : "Pick the port wired to your Dante network, then press Start. The Mac will appear in Dante Controller under this name.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    if m.running {
+                        Button("Stop") { m.stop() }
+                    } else {
+                        Button("Start") { m.start() }
+                            .keyboardShortcut(.defaultAction)
+                            .disabled(m.selectedPort.isEmpty)
+                    }
                 }
             }
             .padding(6)
-            Text("Pick the port that's wired to your Dante network.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 6)
         }
     }
 
-    // MARK: Clock
+    // MARK: Status
 
-    private var clockBox: some View {
-        GroupBox(label: Text("Clock").font(.headline)) {
-            VStack(alignment: .leading, spacing: 4) {
+    private var statusBox: some View {
+        GroupBox(label: Text("Status").font(.headline)) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Circle().fill(Color(m.clockColor)).frame(width: 12, height: 12)
-                    Text(m.clockText).bold()
+                    Circle().fill(Color(m.deviceColor)).frame(width: 12, height: 12)
+                    Text(m.deviceText).bold()
                     Spacer()
                 }
-                if m.running && m.clock.have_master != 0 {
-                    Text("Grandmaster \(cString(m.clock.grandmaster)) via \(cString(m.clock.master_ip))")
+                HStack {
+                    Text("Clock:").foregroundColor(.secondary)
+                    Text(m.clockText)
+                    Spacer()
+                }
+                if m.running && m.status.have_master != 0 {
+                    Text("Clock leader \(cString(m.status.grandmaster)) at \(cString(m.status.master_ip))")
                         .font(.system(.caption, design: .monospaced))
                     Text(String(format: "Network delay %.0f µs · jitter %.0f µs · rate %+.2f ppm",
-                                m.clock.delay_us, m.clock.jitter_us, m.clock.rate_ppm))
+                                m.status.delay_us, m.status.jitter_us, m.status.rate_ppm))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 } else if m.running {
-                    Text("Make sure AES67 mode is turned on for a Dante device in Dante Controller.")
+                    Text("Waiting for a Dante device to provide the clock. Make sure this port is on the same network as your Dante gear.")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if m.running && Int(m.status.state) == Int(JVS_RUNNING) {
+                    Text("Open Dante Controller: “\(cString(m.status.name))” should be in the routing grid with \(m.status.rx_channels) receive and \(m.status.tx_channels) transmit channels.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(6)
@@ -111,74 +157,44 @@ struct ContentView: View {
     private var receiveBox: some View {
         GroupBox(label: Text("Receive from Dante").font(.headline)) {
             VStack(alignment: .leading, spacing: 10) {
-                if m.streams.isEmpty {
-                    Text(m.running
-                         ? "Looking for AES67 streams… Dante announces them about every 30 seconds."
-                         : "Start the network to look for streams.")
-                        .font(.callout)
-                        .foregroundColor(.secondary)
-                } else {
-                    Picker("Stream", selection: $m.selectedStream) {
-                        ForEach(m.streams) { s in
-                            Text("\(s.name) — \(s.channels) ch").tag(Optional(s.key))
-                        }
+                Text("Route Dante channels to this Mac in Dante Controller. Their levels show here.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                HStack(spacing: 12) {
+                    Toggle("Play on Mac speakers", isOn: Binding(
+                        get: { m.status.monitoring != 0 },
+                        set: { m.setMonitor($0) }))
+                    Picker("", selection: $m.monitorLeft) {
+                        ForEach(1...max(Int(m.status.rx_channels), 1), id: \.self) { Text("L: \($0)").tag($0) }
                     }
-                    .disabled(m.rx.active != 0)
-                    if let s = m.selectedStreamItem {
-                        Text(s.detail).font(.caption).foregroundColor(.secondary)
+                    .frame(width: 80)
+                    .onChange(of: m.monitorLeft) { _ in m.updateMonitorChannels() }
+                    Picker("", selection: $m.monitorRight) {
+                        ForEach(1...max(Int(m.status.rx_channels), 1), id: \.self) { Text("R: \($0)").tag($0) }
                     }
+                    .frame(width: 80)
+                    .onChange(of: m.monitorRight) { _ in m.updateMonitorChannels() }
+                    Spacer()
                 }
-
-                HStack(spacing: 16) {
-                    Picker("Latency", selection: $m.latencyMs) {
-                        ForEach([1.0, 2.0, 4.0, 10.0, 20.0, 50.0], id: \.self) { v in
-                            Text("\(Int(v)) ms").tag(v)
-                        }
-                    }
-                    .frame(width: 160)
-                    Toggle("Play on Mac speakers", isOn: $m.playOnSpeakers)
-                    if m.playOnSpeakers {
-                        Picker("", selection: $m.playLeft) {
-                            ForEach(1...max(m.selectedStreamItem?.channels ?? 2, 1), id: \.self) { Text("L: \($0)").tag($0) }
-                        }
-                        .frame(width: 80)
-                        Picker("", selection: $m.playRight) {
-                            ForEach(1...max(m.selectedStreamItem?.channels ?? 2, 1), id: \.self) { Text("R: \($0)").tag($0) }
-                        }
-                        .frame(width: 80)
-                    }
-                }
-                .disabled(m.rx.active != 0)
-                Toggle("Record all channels to a WAV file in Music › Jose Virtual Soundcard", isOn: $m.record)
-                    .disabled(m.rx.active != 0)
-
                 HStack {
-                    if m.rx.active != 0 {
-                        Button("Stop listening") { m.stopReceive() }
-                        if m.rx.recording != 0 {
-                            Button("Show recording") { m.showRecording() }
-                        }
+                    if m.status.recording != 0 {
+                        Button("Stop recording") { m.stopRecording() }
+                        Text("Recording every channel…").font(.caption).foregroundColor(.red)
                     } else {
-                        Button("Start listening") { m.startReceive() }
-                            .disabled(!m.running || m.clock.locked == 0 || m.selectedStream == nil)
+                        Button("Record all channels") { m.startRecording() }
+                            .help("Saves a WAV file in Music › Jose Virtual Soundcard")
+                    }
+                    if m.lastRecording != nil {
+                        Button("Show recording") { m.showRecording() }
                     }
                     Spacer()
                 }
-
-                if m.rx.active != 0 {
-                    Text(String(format: "%llu packets · %llu lost · %.2f%% missing · arrive %.0f µs avg / %.0f µs max",
-                                m.rx.packets, m.rx.lost, m.rx.missing_pct, m.rx.arrival_avg_us, m.rx.arrival_max_us))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    if m.rx.arrival_max_us > m.rx.latency_ms * 1000 {
-                        Text("Some packets arrive later than the latency. If you hear clicks, stop and pick a higher latency.")
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                    }
+                if !m.peaks.isEmpty {
                     MeterGrid(peaks: m.peaks)
                 }
             }
             .padding(6)
+            .disabled(!m.running || Int(m.status.state) != Int(JVS_RUNNING) || m.status.rx_channels == 0)
         }
     }
 
@@ -187,34 +203,17 @@ struct ContentView: View {
     private var sendBox: some View {
         GroupBox(label: Text("Send to Dante").font(.headline)) {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 16) {
-                    TextField("Name in Dante Controller", text: $m.sendName)
-                        .frame(width: 200)
-                    Picker("Channels", selection: $m.sendFlows) {
-                        ForEach(1...8, id: \.self) { f in
-                            Text(f == 1 ? "8 (1 flow)" : "\(f * 8) (\(f) flows)").tag(f)
-                        }
-                    }
-                    .frame(width: 200)
-                }
-                .disabled(m.tx.active != 0)
-                Text("Sends test tones: channel 1 is 300 Hz, channel 2 is 400 Hz, and so on. Route them in Dante Controller.")
+                Toggle("Send test tones on every channel", isOn: Binding(
+                    get: { m.status.tones != 0 },
+                    set: { m.setTones($0) }))
+                Text("Channel 1 plays 300 Hz, channel 2 plays 400 Hz, and so on. Route them to a Dante device in Dante Controller to hear them.")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                HStack {
-                    if m.tx.active != 0 {
-                        Button("Stop sending") { m.stopSend() }
-                        Text("\(m.tx.packets) packets · \(m.tx.late) late · \(m.tx.resyncs) resyncs")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    } else {
-                        Button("Start sending") { m.startSend() }
-                            .disabled(!m.running || m.clock.locked == 0)
-                    }
-                    Spacer()
-                }
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .disabled(!m.running || m.status.tx_channels == 0)
         }
     }
 }
