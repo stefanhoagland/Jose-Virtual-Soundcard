@@ -42,6 +42,14 @@ jobs:
           lipo -info "$APP/Contents/MacOS/JoseVirtualSoundcard"
           plutil -lint "$APP/Contents/Info.plist"
           ls -la dist
+      - name: Launch the app and check it stays up
+        run: |
+          "dist/Jose Virtual Soundcard.app/Contents/MacOS/JoseVirtualSoundcard" > app.log 2>&1 &
+          PID=$!
+          sleep 10
+          if ! kill -0 $PID; then echo "App exited early:"; cat app.log; exit 1; fi
+          kill $PID
+          echo "App ran for 10 seconds without crashing"
       - uses: actions/upload-artifact@v4
         with:
           name: JoseVirtualSoundcard-app
