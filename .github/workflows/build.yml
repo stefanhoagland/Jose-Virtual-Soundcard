@@ -66,7 +66,7 @@ jobs:
           name: jvs-poc-macos
           path: jvs-poc-macos.tar.gz
       - name: Build the app
-        run: VERSION=0.2.4 BUILD=${{ github.run_number }} ./scripts/build-app.sh
+        run: VERSION=0.3.0 BUILD=${{ github.run_number }} ./scripts/build-app.sh
       - name: Check the app bundle
         run: |
           APP="dist/Jose Virtual Soundcard.app"
@@ -81,10 +81,20 @@ jobs:
           if ! kill -0 $PID; then echo "App exited early:"; cat app.log; exit 1; fi
           kill $PID
           echo "App ran for 10 seconds without crashing"
+      - name: Build the installer
+        run: VERSION=0.3.0 ./scripts/build-pkg.sh
+      - name: Installer installs cleanly
+        run: |
+          sudo installer -pkg dist/JoseVirtualSoundcard-0.3.0.pkg -target /
+          ls "/Applications/Jose Virtual Soundcard.app" /Library/Audio/Plug-Ins/HAL/JoseVirtualSoundcard.driver
+          sleep 5
+          system_profiler SPAudioDataType | grep -A3 "Jose Virtual Soundcard"
       - uses: actions/upload-artifact@v4
         with:
           name: JoseVirtualSoundcard-app
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/*.pkg
       # A fixed download link for the newest test build:
       # https://github.com/<owner>/<repo>/releases/download/latest-test/JoseVirtualSoundcard.dmg
       - name: Publish as "latest-test" download
@@ -93,11 +103,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
+          # The driver work publishes to its own download until it's ready.
+          TAG=latest-test
+          if [ "${{ github.head_ref }}" = "mac-driver" ]; then TAG=driver-test; fi
           cp dist/JoseVirtualSoundcard-*.dmg dist/JoseVirtualSoundcard.dmg
-          gh release delete latest-test --cleanup-tag --yes || true
-          gh release create latest-test dist/JoseVirtualSoundcard.dmg jvs-poc-macos.tar.gz \
-            --target "$SHA" --prerelease --title "Latest test build" \
-            --notes "Test build from commit $SHA. Not signed by Apple yet: on first launch use System Settings > Privacy & Security > Open Anyway."
+          cp dist/JoseVirtualSoundcard-*.pkg dist/JoseVirtualSoundcard.pkg
+          gh release delete "$TAG" --cleanup-tag --yes || true
+          gh release create "$TAG" dist/JoseVirtualSoundcard.pkg dist/JoseVirtualSoundcard.dmg jvs-poc-macos.tar.gz \
+            --target "$SHA" --prerelease --title "Test build ($TAG)" \
+            --notes "Test build from commit $SHA. Not signed by Apple yet: right-click the installer and choose Open, or use System Settings > Privacy & Security > Open Anyway."
 
   linux:
     runs-on: ubuntu-latest

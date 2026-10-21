@@ -141,11 +141,23 @@ double tone_amp(const float* x, size_t n, double hz) {
     return 2 * std::hypot(re, im) / double(n);
 }
 
-int clicks(const float* x, size_t n) {
+// Counts jumps in the waveform; prints where the first few are.
+int clicks(const float* x, size_t n, uint64_t start = 0, uint64_t m0 = 0) {
     int c = 0;
     for (size_t i = 2; i < n; ++i)
-        if (std::fabs(x[i] - 2 * x[i - 1] + x[i - 2]) > 0.02f) ++c;
+        if (std::fabs(x[i] - 2 * x[i - 1] + x[i - 2]) > 0.02f) {
+            if (c < 12 && start)
+                std::printf("  click at media %llu (device sample %llu, mod 16384 = %llu): %.3f %.3f %.3f\n",
+                            (unsigned long long)(start + i), (unsigned long long)(start + i - m0),
+                            (unsigned long long)((start + i - m0) % 16384), x[i - 2], x[i - 1], x[i]);
+            ++c;
+        }
     return c;
+}
+
+uint64_t json_u64(const std::string& j, const char* key) {
+    auto p = j.find(std::string("\"") + key + "\":");
+    return p == std::string::npos ? 0 : std::strtoull(j.c_str() + p + std::strlen(key) + 3, nullptr, 10);
 }
 
 }  // namespace
@@ -276,7 +288,8 @@ int main(int argc, char** argv) {
             for (int i = 0; i < B; ++i) rec.push_back(blk[size_t(i) * 2]);
             pos += B;
         }
-        out_clicks = clicks(rec.data(), rec.size());
+        uint64_t m0 = json_u64(get_string(dev, kPropStatus), "m0");
+        out_clicks = clicks(rec.data(), rec.size(), t0 - 4800, m0);
         std::printf("clicks in 3 s from the Mac to Dante: %d\n", out_clicks);
     }
     int in_clicks = -1;

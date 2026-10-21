@@ -22,7 +22,7 @@ for arch in arm64 x86_64; do
   swiftc -O -target "$arch-apple-macos12.0" -parse-as-library \
     -import-objc-header app/Bridging.h -Xcc -Iengine/include \
     app/*.swift build/libjvs_engine.a build/libjvs_dante.a -lc++ -liconv \
-    -framework AudioToolbox -framework CoreFoundation -framework AppKit -framework SwiftUI \
+    -framework AudioToolbox -framework CoreAudio -framework CoreFoundation -framework AppKit -framework SwiftUI \
     -framework SystemConfiguration -framework Security \
     -o "build/JoseVirtualSoundcard-$arch"
 done

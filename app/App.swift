@@ -21,6 +21,12 @@ struct ContentView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                if !m.driverInstalled {
+                    Label("The Jose Virtual Soundcard driver isn't installed. Open the installer (.pkg) from the download, then reopen this app.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 deviceBox
                 if let e = m.errorText {
                     Label(e, systemImage: "exclamationmark.triangle.fill")
@@ -33,7 +39,7 @@ struct ContentView: View {
                 HStack {
                     Spacer()
                     Button("Show log") { m.showLog() }
-                        .help("Shows the Dante engine's log file in Finder")
+                        .help("Saves the driver's log and shows it in Finder")
                     Button(copied ? "Copied" : "Copy test report") {
                         m.copyReport()
                         copied = true
@@ -107,7 +113,7 @@ struct ContentView: View {
                     } else {
                         Button("Start") { m.start() }
                             .keyboardShortcut(.defaultAction)
-                            .disabled(m.selectedPort.isEmpty)
+                            .disabled(m.selectedPort.isEmpty || !m.driverInstalled)
                     }
                 }
             }
@@ -130,11 +136,11 @@ struct ContentView: View {
                     Text(m.clockText)
                     Spacer()
                 }
-                if m.running && m.status.have_master != 0 {
-                    Text("Clock leader \(cString(m.status.grandmaster)) at \(cString(m.status.master_ip))")
+                if m.running && m.status.have_master == true {
+                    Text("Clock leader \(m.status.grandmaster ?? "") at \(m.status.master_ip ?? "")")
                         .font(.system(.caption, design: .monospaced))
                     Text(String(format: "Network delay %.0f µs · jitter %.0f µs · rate %+.2f ppm",
-                                m.status.delay_us, m.status.jitter_us, m.status.rate_ppm))
+                                m.status.delay_us ?? 0, m.status.jitter_us ?? 0, m.status.rate_ppm ?? 0))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 } else if m.running {
@@ -143,18 +149,17 @@ struct ContentView: View {
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if m.running && Int(m.status.state) == Int(JVS_RUNNING) {
+                if m.isRunning {
                     Text(m.controllerRequests > 0
                          ? "Dante Controller is talking to this Mac (\(m.controllerRequests) requests)."
                          : "No requests from Dante Controller yet.")
                         .font(.caption)
                         .foregroundColor(m.controllerRequests > 0 ? .green : .orange)
-                    Text("Open Dante Controller: “\(cString(m.status.name))” should be in the routing grid with \(m.status.rx_channels) receive and \(m.status.tx_channels) transmit channels.")
+                    Text("Open Dante Controller: “\(m.status.name ?? m.deviceName)” should be in the routing grid with \(m.status.rx ?? 0) receive and \(m.status.tx ?? 0) transmit channels.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-            }
             .padding(6)
         }
     }
@@ -162,46 +167,21 @@ struct ContentView: View {
     // MARK: Receive
 
     private var receiveBox: some View {
-        GroupBox(label: Text("Receive from Dante").font(.headline)) {
+        GroupBox(label: Text("Use it on this Mac").font(.headline)) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Route Dante channels to this Mac in Dante Controller. Their levels show here.")
+                Text("“Jose Virtual Soundcard” is a sound device on this Mac with 64 inputs and 64 outputs. Choose it as the output and input in your DAW, ProPresenter, or System Settings › Sound. Output 1 goes to Dante transmit channel 1, and so on; Dante receive channel 1 arrives on input 1.")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                HStack(spacing: 12) {
-                    Toggle("Play on Mac speakers", isOn: Binding(
-                        get: { m.status.monitoring != 0 },
-                        set: { m.setMonitor($0) }))
-                    Picker("", selection: $m.monitorLeft) {
-                        ForEach(1...max(Int(m.status.rx_channels), 1), id: \.self) { Text("L: \($0)").tag($0) }
-                    }
-                    .frame(width: 80)
-                    .onChange(of: m.monitorLeft) { _ in m.updateMonitorChannels() }
-                    Picker("", selection: $m.monitorRight) {
-                        ForEach(1...max(Int(m.status.rx_channels), 1), id: \.self) { Text("R: \($0)").tag($0) }
-                    }
-                    .frame(width: 80)
-                    .onChange(of: m.monitorRight) { _ in m.updateMonitorChannels() }
-                    Spacer()
-                }
-                HStack {
-                    if m.status.recording != 0 {
-                        Button("Stop recording") { m.stopRecording() }
-                        Text("Recording every channel…").font(.caption).foregroundColor(.red)
-                    } else {
-                        Button("Record all channels") { m.startRecording() }
-                            .help("Saves a WAV file in Music › Jose Virtual Soundcard")
-                    }
-                    if m.lastRecording != nil {
-                        Button("Show recording") { m.showRecording() }
-                    }
-                    Spacer()
-                }
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(m.status.io_running ? "An app is using the device now." : "No app is using the device right now.")
+                    .font(.caption)
                 if !m.peaks.isEmpty {
+                    Text("Levels received from Dante:").font(.caption)
                     MeterGrid(peaks: m.peaks)
                 }
             }
             .padding(6)
-            .disabled(!m.running || Int(m.status.state) != Int(JVS_RUNNING) || m.status.rx_channels == 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -211,16 +191,16 @@ struct ContentView: View {
         GroupBox(label: Text("Send to Dante").font(.headline)) {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle("Send test tones on every channel", isOn: Binding(
-                    get: { m.status.tones != 0 },
+                    get: { m.status.tones },
                     set: { m.setTones($0) }))
-                Text("Channel 1 plays 300 Hz, channel 2 plays 400 Hz, and so on. Route them to a Dante device in Dante Controller to hear them.")
+                Text("Channel 1 plays 300 Hz, channel 2 plays 400 Hz, and so on, instead of the Mac's audio. Route them to a Dante device in Dante Controller to hear them.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(6)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .disabled(!m.running || m.status.tx_channels == 0)
+            .disabled(!m.isRunning || (m.status.tx ?? 0) == 0)
         }
     }
 }

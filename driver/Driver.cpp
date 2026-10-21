@@ -232,6 +232,12 @@ struct Driver {
     UInt64 seed = 1;
     Float64 last_sample = 0;    // last zero timestamp's sample time
     std::atomic<bool> tones{false};
+    // IO health, for the status: output cycles written too late to be sent,
+    // jumps in the sample time, and the smallest head start (in frames).
+    std::atomic<uint64_t> late_writes{0}, out_gaps{0}, out_cycles{0};
+    std::atomic<int64_t> min_margin{1 << 30};
+    uint64_t next_out = 0;
+    std::atomic<uint64_t> m0_shared{0};
 
     std::atomic<UInt32> ref_count{1};
 } g;
@@ -376,6 +382,11 @@ std::string status_json() {
                   int(g.rate.load()), g.io_clients.load() > 0 ? "true" : "false", s.tones ? "true" : "false");
     j += b;
     j += "\"error\":\"" + json_escape(err) + "\",";
+    std::snprintf(b, sizeof b, "\"out_cycles\":%llu,\"late_writes\":%llu,\"out_gaps\":%llu,\"min_margin\":%lld,\"m0\":%llu,",
+                  (unsigned long long)g.out_cycles.load(), (unsigned long long)g.late_writes.load(),
+                  (unsigned long long)g.out_gaps.load(), (long long)g.min_margin.load(),
+                  (unsigned long long)g.m0_shared.load());
+    j += b;
     // Holds the engine like the IO thread does, so it can't be stopped meanwhile.
     EngineUse use;
     DanteDevice* e = use.e;
@@ -929,6 +940,7 @@ OSStatus StartIO(AudioServerPlugInDriverRef drv, AudioObjectID dev, UInt32) {
         g.dante_timing = false;
         g.host_anchor = mach_absolute_time();
         g.last_sample = 0;
+        g.next_out = 0;
         ++g.seed;
         notify(kDevice, {kAudioDevicePropertyDeviceIsRunning});
     }
@@ -1008,7 +1020,19 @@ OSStatus DoIOOperation(AudioServerPlugInDriverRef drv, AudioObjectID dev, AudioO
         else std::memset(buf, 0, size_t(frames) * kChannels * sizeof(float));
     } else if (op == kAudioServerPlugInIOOperationWriteMix) {
         uint64_t s = uint64_t(cycle->mOutputTime.mSampleTime);
-        if (dante && !g.tones.load(std::memory_order_relaxed)) use.e->write_tx(g.m0 + s, int(frames), buf, int(kChannels));
+        if (dante && !g.tones.load(std::memory_order_relaxed)) {
+            use.e->write_tx(g.m0 + s, int(frames), buf, int(kChannels));
+            uint64_t t;
+            if (use.e->now(t)) {
+                int64_t margin = int64_t(g.m0 + s) - int64_t(t);
+                if (margin < 0) g.late_writes.fetch_add(1, std::memory_order_relaxed);
+                if (margin < g.min_margin.load(std::memory_order_relaxed)) g.min_margin.store(margin, std::memory_order_relaxed);
+            }
+            if (g.next_out != 0 && s != g.next_out) g.out_gaps.fetch_add(1, std::memory_order_relaxed);
+            g.next_out = s + frames;
+            g.out_cycles.fetch_add(1, std::memory_order_relaxed);
+            g.m0_shared.store(g.m0, std::memory_order_relaxed);
+        }
     }
     return 0;
 }
