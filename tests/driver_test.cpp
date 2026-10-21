@@ -281,11 +281,10 @@ int main(int argc, char** argv) {
         std::printf("\n");
     }
 
-    // Clicks: record what B receives for 3 s.
-    int out_clicks = -1;
-    if (out_ok) {
+    // Clicks: record what B receives on channel 1 for 3 s.
+    auto record_b = [&](std::vector<float>& rec) -> uint64_t {
         const int B = 2400;
-        std::vector<float> blk(size_t(B) * 2), rec;
+        std::vector<float> blk(size_t(B) * 2);
         uint64_t t0 = 0;
         b.now(t0);
         uint64_t pos = t0 - 4800;
@@ -300,8 +299,14 @@ int main(int argc, char** argv) {
             for (int i = 0; i < B; ++i) rec.push_back(blk[size_t(i) * 2]);
             pos += B;
         }
+        return t0 - 4800;
+    };
+    int out_clicks = -1;
+    if (out_ok) {
+        std::vector<float> rec;
+        uint64_t start = record_b(rec);
         uint64_t m0 = json_u64(get_string(dev, kPropStatus), "m0");
-        out_clicks = clicks(rec.data(), rec.size(), t0 - 4800, m0);
+        out_clicks = clicks(rec.data(), rec.size(), start, m0);
         std::printf("clicks in 3 s from the Mac to Dante: %d\n", out_clicks);
     }
     int in_clicks = -1;
@@ -314,6 +319,23 @@ int main(int argc, char** argv) {
 
     AudioDeviceStop(dev, proc);
     AudioDeviceDestroyIOProcID(dev, proc);
+
+    // For comparison: the driver's own test tones (no Core Audio in the path).
+    {
+        auto a = addr(kPropConfig);
+        CFMutableDictionaryRef d =
+            CFDictionaryCreateMutable(nullptr, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        CFDictionarySetValue(d, CFSTR("tones"), kCFBooleanTrue);
+        CFPropertyListRef pl = d;
+        AudioObjectSetPropertyData(dev, &a, 0, nullptr, sizeof pl, &pl);
+        CFRelease(d);
+        wait_ms(1500);
+        std::vector<float> rec;
+        uint64_t start = record_b(rec);
+        int c = clicks(rec.data(), rec.size(), start, 0);
+        std::printf("for comparison, clicks in the driver's own test tone (Core Audio not involved): %d, level %.3f\n", c,
+                    tone_amp(rec.data(), 4800, 300));
+    }
     std::printf("driver status: %s\n", get_string(dev, kPropStatus).c_str());
     std::printf("Core Audio overloads during the test: %d\n", overloads.load());
     bool ok = out_ok && in_ok && out_clicks == 0 && in_clicks == 0;

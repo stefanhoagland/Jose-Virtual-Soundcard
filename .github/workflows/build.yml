@@ -76,6 +76,12 @@ jobs:
           ls "/Applications/Jose Virtual Soundcard.app" /Library/Audio/Plug-Ins/HAL/JoseVirtualSoundcard.driver
           sleep 5
           system_profiler SPAudioDataType | grep -A3 "Jose Virtual Soundcard"
+      - name: For comparison, Dante loopback without the driver (informational)
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          IF=$(route -n get default | awk '/interface:/{print $2}')
+          sudo ./build/jvs_dante_test "$IF" 1 | grep -v INFO
       - name: Driver test (device appears, audio both ways over Dante)
         timeout-minutes: 6
         run: |
