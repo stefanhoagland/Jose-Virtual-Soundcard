@@ -31,6 +31,18 @@ jobs:
         with:
           name: jvs-poc-macos
           path: jvs-poc-macos.tar.gz
+      - name: Build the app
+        run: VERSION=0.1.0 BUILD=${{ github.run_number }} ./scripts/build-app.sh
+      - name: Check the app bundle
+        run: |
+          APP="dist/Jose Virtual Soundcard.app"
+          lipo -info "$APP/Contents/MacOS/JoseVirtualSoundcard"
+          plutil -lint "$APP/Contents/Info.plist"
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JoseVirtualSoundcard-app
+          path: dist/*.dmg
 
   linux:
     runs-on: ubuntu-latest
@@ -44,3 +56,5 @@ jobs:
         run: ./build/jvs_tests
       - name: Loopback test (fake clock, send 16 channels, receive 8)
         run: sudo ./tests/loopback.sh build/jvs-poc
+      - name: App engine test (the C interface the Mac app uses)
+        run: sudo ./build/jvs_capi_test "$(ip -4 route show default | awk '{print $5; exit}')"

@@ -294,6 +294,19 @@ void RtpSender::loop() {
     }
 }
 
+AudioSource make_test_tone(int first_ch, int channels, uint32_t rate) {
+    return [first_ch, channels, rate](uint64_t mt, float* out, int frames) {
+        for (int i = 0; i < frames; ++i) {
+            uint64_t t = (mt + uint64_t(i)) % rate;  // whole-Hz tones repeat every second
+            for (int c = 0; c < channels; ++c) {
+                uint64_t f_hz = uint64_t(200 + 100 * ((first_ch + c) % 64 + 1));
+                double ph = 2.0 * M_PI * double(t * f_hz % rate) / double(rate);
+                out[i * channels + c] = float(0.125 * std::sin(ph));
+            }
+        }
+    };
+}
+
 TxStats RtpSender::stats() const {
     TxStats s;
     s.packets = packets_;

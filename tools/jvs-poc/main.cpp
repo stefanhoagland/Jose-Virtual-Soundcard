@@ -25,7 +25,7 @@
 #include "jvs/sap.h"
 #include "jvs/sdp.h"
 #include "jvs/wav.h"
-#include "player.h"
+#include "jvs/player.h"
 #include "test_master.h"
 
 using namespace jvs;
@@ -410,18 +410,7 @@ int cmd_send(const Args& a) {
                 }
             };
         } else {
-            // Each channel gets its own pitch so you can tell them apart:
-            // channel n plays 200 + 100*n Hz at -18 dBFS.
-            src = [first_ch, channels](uint64_t mt, float* out, int frames) {
-                for (int i = 0; i < frames; ++i) {
-                    uint64_t t = (mt + uint64_t(i)) % 48000;
-                    for (int c = 0; c < channels; ++c) {
-                        int f_hz = 200 + 100 * ((first_ch + c) % 64 + 1);
-                        double ph = 2.0 * M_PI * double(t * uint64_t(f_hz) % 48000) / 48000.0;
-                        out[i * channels + c] = float(0.125 * std::sin(ph));
-                    }
-                }
-            };
+            src = make_test_tone(first_ch, channels);
         }
         auto s = std::make_unique<RtpSender>(d, src);
         if (!s->start(ni, &ptp)) {
