@@ -160,6 +160,7 @@ struct ContentView: View {
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            }
             .padding(6)
         }
     }
