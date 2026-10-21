@@ -100,6 +100,7 @@ mod protocol;
 mod ring_buffer;
 mod state_storage;
 mod util;
+pub mod jvs_stats;
 
 pub use util::bytes as byte_utils;
 pub use util::net as net_utils;

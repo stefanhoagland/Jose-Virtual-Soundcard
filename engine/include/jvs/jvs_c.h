@@ -95,6 +95,15 @@ void jvs_record_stop(jvs_session* s);
    channels (1-based), like a click in Dante Controller's routing grid. */
 int jvs_subscribe(jvs_session* s, int local_channel, const char* tx_channel, const char* tx_device);
 
+/* Diagnostics. jvs_set_log_file sends the Dante engine's log to a file;
+   call it once, before the first jvs_start. jvs_get_diagnostics fills out
+   with control traffic counts per port and which programs on this Mac use
+   the Dante ports. */
+void jvs_set_log_file(const char* path);
+void jvs_get_diagnostics(jvs_session* s, char* out, int out_size);
+/* Requests received on the routing port (4440), i.e. from Dante Controller. */
+long long jvs_controller_requests(jvs_session* s);
+
 /* Makes a name Dante accepts: letters, digits and '-', at most 31 characters. */
 void jvs_clean_name(const char* in, char* out, int out_size);
 

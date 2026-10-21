@@ -36,6 +36,11 @@ jobs:
         run: |
           IF=$(route -n get default | awk '/interface:/{print $2}')
           sudo ./build/jvs_capi_test "$IF" 1
+      # Dante Controller on the same Mac finds devices through macOS's own
+      # Bonjour, so the device must be visible there.
+      - name: Device is visible to macOS Bonjour
+        timeout-minutes: 3
+        run: sudo ./tests/check-bonjour.sh build/jvs-poc
       - name: Package
         run: |
           mkdir -p dist
@@ -46,7 +51,7 @@ jobs:
           name: jvs-poc-macos
           path: jvs-poc-macos.tar.gz
       - name: Build the app
-        run: VERSION=0.2.0 BUILD=${{ github.run_number }} ./scripts/build-app.sh
+        run: VERSION=0.2.1 BUILD=${{ github.run_number }} ./scripts/build-app.sh
       - name: Check the app bundle
         run: |
           APP="dist/Jose Virtual Soundcard.app"

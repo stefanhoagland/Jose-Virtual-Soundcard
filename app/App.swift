@@ -32,6 +32,8 @@ struct ContentView: View {
                 sendBox
                 HStack {
                     Spacer()
+                    Button("Show log") { m.showLog() }
+                        .help("Shows the Dante engine's log file in Finder")
                     Button(copied ? "Copied" : "Copy test report") {
                         m.copyReport()
                         copied = true
@@ -142,6 +144,11 @@ struct ContentView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if m.running && Int(m.status.state) == Int(JVS_RUNNING) {
+                    Text(m.controllerRequests > 0
+                         ? "Dante Controller is talking to this Mac (\(m.controllerRequests) requests)."
+                         : "No requests from Dante Controller yet.")
+                        .font(.caption)
+                        .foregroundColor(m.controllerRequests > 0 ? .green : .orange)
                     Text("Open Dante Controller: “\(cString(m.status.name))” should be in the routing grid with \(m.status.rx_channels) receive and \(m.status.tx_channels) transmit channels.")
                         .font(.caption)
                         .foregroundColor(.secondary)

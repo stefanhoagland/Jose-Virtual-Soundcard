@@ -67,6 +67,7 @@ impl UdpSocketWrapper {
       r = socket.recv_from(&mut recv_buff.buff) => {
         match r {
           Ok((len_recv, src)) => {
+            crate::jvs_stats::record_rx(self.listen_port, src);
             return Some((src, &recv_buff.buff[..len_recv]));
           },
           Err(e) => {
@@ -90,8 +91,12 @@ impl UdpSocketWrapper {
         return;
       }
     };
-    if let Err(e) = socket.send_to(packet, dst).await {
-      error!("send error (ignoring): {e:?}");
+    match socket.send_to(packet, dst).await {
+      Ok(_) => crate::jvs_stats::record_tx(self.listen_port, None),
+      Err(e) => {
+        error!("send error (ignoring): {e:?}");
+        crate::jvs_stats::record_tx(self.listen_port, Some(e.to_string()));
+      }
     }
   }
 }

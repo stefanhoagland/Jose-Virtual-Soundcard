@@ -116,7 +116,7 @@ pub extern "C" fn jvsd_create(cfg: *const JvsdConfig) -> *mut Jvsd {
     return std::ptr::null_mut();
   }
   let cfg = unsafe { &*cfg };
-  let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).try_init();
+  init_logging(None);
 
   let ip: Option<Ipv4Addr> = cstr(cfg.bind_ip).and_then(|s| s.parse().ok());
   if ip.is_none() {
@@ -335,4 +335,45 @@ pub extern "C" fn jvsd_destroy(h: *mut Jvsd) {
   }
   *h.buffers_valid.write().unwrap() = false;
   let _ = (&h.rx_timestamp, &h.tx_timestamp);
+}
+
+static LOG_INIT: std::sync::Once = std::sync::Once::new();
+
+fn init_logging(file: Option<std::fs::File>) {
+  LOG_INIT.call_once(|| {
+    let mut b = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    if let Some(f) = file {
+      b.target(env_logger::Target::Pipe(Box::new(f)));
+    }
+    let _ = b.try_init();
+  });
+}
+
+/// Sends Inferno's log to a file (appending). Call before jvsd_create; only
+/// the first call in a process takes effect.
+#[no_mangle]
+pub extern "C" fn jvsd_set_log_file(path: *const c_char) -> c_int {
+  let Some(p) = cstr(path) else { return -1 };
+  match std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+    Ok(f) => {
+      init_logging(Some(f));
+      0
+    }
+    Err(_) => -1,
+  }
+}
+
+/// Control traffic per listening port, one line each, for diagnostics.
+#[no_mangle]
+pub extern "C" fn jvsd_net_summary(out: *mut c_char, len: c_int) {
+  if out.is_null() || len <= 0 {
+    return;
+  }
+  let s = inferno_aoip::jvs_stats::summary();
+  let bytes = s.as_bytes();
+  let n = bytes.len().min(len as usize - 1);
+  unsafe {
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, n);
+    *out.add(n) = 0;
+  }
 }

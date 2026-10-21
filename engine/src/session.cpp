@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -19,6 +20,7 @@
 #include "jvs/net.h"
 #include "jvs/player.h"
 #include "jvs/wav.h"
+#include "../../dante/jvs_dante.h"
 
 using namespace jvs;
 
@@ -298,6 +300,48 @@ int jvs_subscribe(jvs_session* s, int local_channel, const char* tx_channel, con
         return -1;
     }
     return 0;
+}
+
+void jvs_set_log_file(const char* path) {
+    if (path && *path) jvsd_set_log_file(path);
+}
+
+long long jvs_controller_requests(jvs_session* s) {
+    (void)s;
+    char buf[4096];
+    jvsd_net_summary(buf, sizeof buf);
+    const char* p = std::strstr(buf, "4440: ");
+    if (p && (p == buf || p[-1] == '\n')) return std::atoll(p + 6);
+    return 0;
+}
+
+void jvs_get_diagnostics(jvs_session* s, char* out, int out_size) {
+    if (!out || out_size <= 0) return;
+    std::string text = "Control traffic by port (4440 routing, 8800 device info, 8700 info, 4455 audio setup):\n";
+    {
+        char buf[4096];
+        jvsd_net_summary(buf, sizeof buf);
+        text += *buf ? buf : "  nothing received yet\n";
+    }
+    (void)s;
+#if defined(__APPLE__)
+    // Which programs hold the Dante ports on this Mac.
+    text += "Dante ports in use on this Mac:\n";
+    if (FILE* p = popen("/usr/sbin/netstat -anv -p udp 2>/dev/null", "r")) {
+        char line[512];
+        const char* ports[] = {".319 ", ".320 ", ".4400 ", ".4440 ", ".4455 ", ".8700 ", ".8702 ", ".8708 ", ".8800 "};
+        while (std::fgets(line, sizeof line, p)) {
+            for (const char* port : ports)
+                if (std::strstr(line, port)) {
+                    text += "  ";
+                    text += line;
+                    break;
+                }
+        }
+        pclose(p);
+    }
+#endif
+    std::snprintf(out, size_t(out_size), "%s", text.c_str());
 }
 
 }  // extern "C"
