@@ -25,7 +25,7 @@ The device keeps working as a normal Dante device. AES67 mode adds the open prot
 
 ## 2. Install the app
 
-1. Download `JoseVirtualSoundcard-0.1.0.dmg` from the link in the project thread.
+1. Download [JoseVirtualSoundcard.dmg](https://github.com/stefanhoagland/Jose-Virtual-Soundcard/releases/download/latest-test/JoseVirtualSoundcard.dmg).
 2. Open it and drag **Jose Virtual Soundcard** onto **Applications**.
 3. Open the app from Applications. The first time, macOS says it can't check the app for malware, because it isn't signed with a paid Apple developer account yet. Click **Done**, open **System Settings › Privacy & Security**, scroll down, and click **Open Anyway** next to Jose Virtual Soundcard. You only do this once.
 4. When macOS asks whether the app may find devices on your local network, click **Allow**.

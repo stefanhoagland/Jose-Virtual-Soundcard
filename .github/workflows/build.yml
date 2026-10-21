@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write  # to publish the test build as a download
+
 jobs:
   macos:
     runs-on: macos-latest
@@ -43,6 +46,19 @@ jobs:
         with:
           name: JoseVirtualSoundcard-app
           path: dist/*.dmg
+      # A fixed download link for the newest test build:
+      # https://github.com/<owner>/<repo>/releases/download/latest-test/JoseVirtualSoundcard.dmg
+      - name: Publish as "latest-test" download
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          cp dist/JoseVirtualSoundcard-*.dmg dist/JoseVirtualSoundcard.dmg
+          gh release delete latest-test --cleanup-tag --yes || true
+          gh release create latest-test dist/JoseVirtualSoundcard.dmg jvs-poc-macos.tar.gz \
+            --target "$SHA" --prerelease --title "Latest test build" \
+            --notes "Test build from commit $SHA. Not signed by Apple yet: on first launch use System Settings > Privacy & Security > Open Anyway."
 
   linux:
     runs-on: ubuntu-latest
