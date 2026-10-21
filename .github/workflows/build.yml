@@ -41,6 +41,21 @@ jobs:
       - name: Device is visible to macOS Bonjour
         timeout-minutes: 3
         run: sudo ./tests/check-bonjour.sh build/jvs-poc
+      - name: Build the Core Audio driver
+        run: VERSION=0.3.0 BUILD=${{ github.run_number }} ./scripts/build-driver.sh
+      - name: Install the driver
+        run: sudo ./scripts/install-driver.sh
+      - name: Driver test (device appears, audio both ways over Dante)
+        timeout-minutes: 6
+        run: |
+          cmake --build build -j4 --target jvs_driver_test
+          IF=$(route -n get default | awk '/interface:/{print $2}')
+          sudo ./build/jvs_driver_test "$IF" 1
+      - name: Core Audio log if the driver test failed
+        if: failure()
+        run: |
+          log show --last 10m --predicate 'process CONTAINS "coreaudiod" OR process CONTAINS "Core-Audio-Driver" OR eventMessage CONTAINS "JoseVirtualSoundcard"' --style compact | tail -300 || true
+          system_profiler SPAudioDataType || true
       - name: Package
         run: |
           mkdir -p dist

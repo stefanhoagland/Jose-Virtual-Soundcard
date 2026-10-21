@@ -140,25 +140,33 @@ int64_t DanteDevice::index(uint64_t t) const {
     return int64_t((t - start_time_) % uint64_t(buffer_frames_));
 }
 
-bool DanteDevice::read_rx(uint64_t t, int frames, float* out) const {
+bool DanteDevice::read_rx(uint64_t t, int frames, float* out, int out_channels) const {
     const int ch = cfg_.rx_channels;
+    const int oc = out_channels > 0 ? out_channels : ch;
     if (!audio_ || !rx_ || ch == 0 || frames > buffer_frames_) {
-        std::fill(out, out + size_t(frames) * size_t(ch), 0.0f);
+        std::fill(out, out + size_t(frames) * size_t(oc), 0.0f);
         return false;
     }
+    const int n = std::min(ch, oc);
     for (int f = 0; f < frames; ++f) {
         const int32_t* src = rx_ + size_t(index(t + uint64_t(f))) * size_t(ch);
-        for (int c = 0; c < ch; ++c) out[size_t(f) * size_t(ch) + size_t(c)] = float(__atomic_load_n(src + c, __ATOMIC_RELAXED)) * kToFloat;
+        float* dst = out + size_t(f) * size_t(oc);
+        for (int c = 0; c < n; ++c) dst[c] = float(__atomic_load_n(src + c, __ATOMIC_RELAXED)) * kToFloat;
+        for (int c = n; c < oc; ++c) dst[c] = 0.0f;
     }
     return true;
 }
 
-bool DanteDevice::write_tx(uint64_t t, int frames, const float* in) {
+bool DanteDevice::write_tx(uint64_t t, int frames, const float* in, int in_channels) {
     const int ch = cfg_.tx_channels;
+    const int ic = in_channels > 0 ? in_channels : ch;
     if (!audio_ || !tx_ || ch == 0 || frames > buffer_frames_) return false;
+    const int n = std::min(ch, ic);
     for (int f = 0; f < frames; ++f) {
         int32_t* dst = tx_ + size_t(index(t + uint64_t(f))) * size_t(ch);
-        for (int c = 0; c < ch; ++c) __atomic_store_n(dst + c, to_i32(in[size_t(f) * size_t(ch) + size_t(c)]), __ATOMIC_RELAXED);
+        const float* src = in + size_t(f) * size_t(ic);
+        for (int c = 0; c < n; ++c) __atomic_store_n(dst + c, to_i32(src[c]), __ATOMIC_RELAXED);
+        for (int c = n; c < ch; ++c) __atomic_store_n(dst + c, 0, __ATOMIC_RELAXED);
     }
     return true;
 }

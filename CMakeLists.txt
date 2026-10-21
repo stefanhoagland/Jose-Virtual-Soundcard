@@ -88,3 +88,18 @@ target_link_libraries(jvs_dante_test PRIVATE jvs_engine)
 add_executable(jvs_capi_test tests/capi_test.cpp tools/jvs-poc/test_master.cpp)
 target_include_directories(jvs_capi_test PRIVATE tools/jvs-poc)
 target_link_libraries(jvs_capi_test PRIVATE jvs_engine)
+
+# ---- Core Audio driver (macOS) ----
+if(APPLE)
+  set(JVS_VERSION "dev" CACHE STRING "Version shown by the driver")
+  add_library(jvs_driver MODULE driver/Driver.cpp)
+  target_compile_definitions(jvs_driver PRIVATE JVS_VERSION="${JVS_VERSION}")
+  target_link_libraries(jvs_driver PRIVATE jvs_engine "-framework CoreAudio")
+  # Plain binary; scripts/build-driver.sh puts it into the .driver bundle.
+  set_target_properties(jvs_driver PROPERTIES OUTPUT_NAME JoseVirtualSoundcard PREFIX "" SUFFIX "")
+
+  # Test tool: finds the driver's device, configures it, plays and records.
+  add_executable(jvs_driver_test tests/driver_test.cpp tools/jvs-poc/test_master.cpp)
+  target_include_directories(jvs_driver_test PRIVATE tools/jvs-poc)
+  target_link_libraries(jvs_driver_test PRIVATE jvs_engine "-framework CoreAudio")
+endif()
