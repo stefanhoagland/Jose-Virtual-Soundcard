@@ -116,7 +116,7 @@ pub extern "C" fn jvsd_create(cfg: *const JvsdConfig) -> *mut Jvsd {
     return std::ptr::null_mut();
   }
   let cfg = unsafe { &*cfg };
-  init_logging(None);
+  init_logging();
 
   let ip: Option<Ipv4Addr> = cstr(cfg.bind_ip).and_then(|s| s.parse().ok());
   if ip.is_none() {
@@ -339,27 +339,91 @@ pub extern "C" fn jvsd_destroy(h: *mut Jvsd) {
 
 static LOG_INIT: std::sync::Once = std::sync::Once::new();
 
-fn init_logging(file: Option<std::fs::File>) {
+/// Where log lines go: an optional file, and always the last ~64 KB in memory
+/// (a Core Audio driver may not be allowed to write files).
+struct LogSink {
+  file: Option<std::fs::File>,
+  ring: std::collections::VecDeque<u8>,
+}
+const LOG_RING_BYTES: usize = 64 * 1024;
+static LOG_SINK: Mutex<LogSink> = Mutex::new(LogSink { file: None, ring: std::collections::VecDeque::new() });
+
+struct SinkWriter;
+impl std::io::Write for SinkWriter {
+  fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+    let mut s = LOG_SINK.lock().unwrap();
+    if let Some(f) = s.file.as_mut() {
+      let _ = f.write_all(buf);
+    }
+    s.ring.extend(buf.iter().copied());
+    let excess = s.ring.len().saturating_sub(LOG_RING_BYTES);
+    s.ring.drain(..excess);
+    Ok(buf.len())
+  }
+  fn flush(&mut self) -> std::io::Result<()> {
+    Ok(())
+  }
+}
+
+fn init_logging() {
   LOG_INIT.call_once(|| {
     let mut b = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
-    if let Some(f) = file {
-      b.target(env_logger::Target::Pipe(Box::new(f)));
-    }
+    b.target(env_logger::Target::Pipe(Box::new(SinkWriter)));
     let _ = b.try_init();
   });
 }
 
-/// Sends Inferno's log to a file (appending). Call before jvsd_create; only
-/// the first call in a process takes effect.
+/// Also sends the log to a file (appending). NULL stops writing to a file.
 #[no_mangle]
 pub extern "C" fn jvsd_set_log_file(path: *const c_char) -> c_int {
-  let Some(p) = cstr(path) else { return -1 };
-  match std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-    Ok(f) => {
-      init_logging(Some(f));
-      0
+  init_logging();
+  let file = match cstr(path) {
+    None => None,
+    Some(p) => match std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+      Ok(f) => Some(f),
+      Err(_) => return -1,
+    },
+  };
+  LOG_SINK.lock().unwrap().file = file;
+  0
+}
+
+/// Copies the most recent log text (up to len-1 bytes, ending at a line break).
+#[no_mangle]
+pub extern "C" fn jvsd_log_tail(out: *mut c_char, len: c_int) {
+  if out.is_null() || len <= 0 {
+    return;
+  }
+  let s = LOG_SINK.lock().unwrap();
+  let n = s.ring.len().min(len as usize - 1);
+  let mut bytes: Vec<u8> = s.ring.iter().skip(s.ring.len() - n).copied().collect();
+  if n < s.ring.len() {
+    // Start at a whole line.
+    if let Some(i) = bytes.iter().position(|&b| b == b'\n') {
+      bytes.drain(..=i);
     }
-    Err(_) => -1,
+  }
+  unsafe {
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, bytes.len());
+    *out.add(bytes.len()) = 0;
+  }
+}
+
+/// Publishes the PTP clock to devices created with clock_socket "inproc:<name>"
+/// in this process (no socket needed). Same meaning as a usrvclock overlay:
+/// ptp_ns = t + shift + (t - last_sync) * freq_scale, t on clock `clock_id`.
+#[no_mangle]
+pub extern "C" fn jvsd_publish_clock(name: *const c_char, clock_id: i64, last_sync: i64, shift: i64, freq_scale: f64) {
+  if let Some(n) = cstr(name) {
+    usrvclock::publish_inproc(&n, usrvclock::ClockOverlay { clock_id, last_sync, shift, freq_scale });
+  }
+}
+
+/// Folder where Inferno keeps its saved state (subscriptions). Call before jvsd_create.
+#[no_mangle]
+pub extern "C" fn jvsd_set_state_dir(path: *const c_char) {
+  if let Some(p) = cstr(path) {
+    std::env::set_var("JVS_STATE_DIR", p);
   }
 }
 

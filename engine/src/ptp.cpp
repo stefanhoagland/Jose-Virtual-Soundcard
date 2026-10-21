@@ -260,8 +260,16 @@ bool PtpFollower::start(const NetInterface& iface, uint8_t domain, PtpMode mode)
         have_delay_ = false;
     }
     run_ = true;
-    ev_thread_ = std::thread([this] { event_loop(); });
-    gen_thread_ = std::thread([this] { general_loop(); });
+    // Real-time so clock messages are handled promptly even when macOS
+    // throttles the process.
+    ev_thread_ = std::thread([this] {
+        set_thread_realtime(5000, 500);
+        event_loop();
+    });
+    gen_thread_ = std::thread([this] {
+        set_thread_realtime(5000, 500);
+        general_loop();
+    });
     return true;
 }
 

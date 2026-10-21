@@ -29,6 +29,10 @@ struct DanteConfig {
     PtpMode ptp_mode = PtpMode::Auto;
     int process_id = 0;          // >= 1 to run several devices on one IP (tests)
     int alt_port = 0;
+    // Another component (the Core Audio driver) writes the audio to send.
+    // The device then only clears what has been sent, so a stopped writer
+    // leads to silence instead of a repeating buffer.
+    bool external_tx = false;
 };
 
 enum class DanteState { Stopped, WaitingForClock, Starting, Running, Failed };
@@ -51,12 +55,16 @@ public:
 
     // Received audio for [t, t+frames). Read only up to now(); older than
     // about buffer size is gone. out is interleaved, rx_channels wide.
-    bool read_rx(uint64_t t, int frames, float* out) const;
+    // out_channels: width of out if not rx_channels (extra channels get silence).
+    bool read_rx(uint64_t t, int frames, float* out, int out_channels = 0) const;
     // Audio to send for [t, t+frames). Write ahead of now(), by less than the
     // buffer size. in is interleaved, tx_channels wide.
-    bool write_tx(uint64_t t, int frames, const float* in);
+    // in_channels: width of in if not tx_channels.
+    bool write_tx(uint64_t t, int frames, const float* in, int in_channels = 0);
 
     int buffer_frames() const { return buffer_frames_; }
+    // Monotonic time (ns) at which media time t happens. False if unlocked.
+    bool mono_from_media(uint64_t t, int64_t& mono_ns) const;
     // UDP port Dante Controller uses for routing (4440 unless it was taken).
     int arc_port() const { return arc_port_; }
 

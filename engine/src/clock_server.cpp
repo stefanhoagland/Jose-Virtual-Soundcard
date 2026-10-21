@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "jvs/clock.h"
+#include "../../dante/jvs_dante.h"
 
 namespace jvs {
 
@@ -37,6 +38,22 @@ bool ClockServer::start(const std::string& path, const PtpFollower* ptp) {
     stop();
     path_ = path;
     ptp_ = ptp;
+    if (path.rfind("inproc:", 0) == 0) {
+        // Same process: hand the overlay to Inferno directly, no socket.
+        run_ = true;
+        th_ = std::thread([this] {
+            set_thread_realtime(50000, 1000);
+            std::string name = path_.substr(7);
+            while (run_) {
+                int64_t last_sync, shift;
+                double freq;
+                if (ptp_ && ptp_->overlay(last_sync, shift, freq))
+                    jvsd_publish_clock(name.c_str(), int64_t(CLOCK_MONOTONIC), last_sync, shift, freq);
+                sleep_until_mono(mono_ns() + 50000000);  // 20 updates a second
+            }
+        });
+        return true;
+    }
     fd_ = ::socket(AF_UNIX, SOCK_DGRAM, 0);
     if (fd_ < 0) return false;
     sockaddr_un sa{};
