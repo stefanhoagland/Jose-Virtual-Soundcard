@@ -219,8 +219,10 @@ void DanteDevice::worker() {
         }
         if (cfg_.external_tx && !tones_) {
             // The driver writes ahead of now. Clear what Inferno has already
-            // sent (with 2 ms to spare), so nothing old is ever sent again.
-            const uint64_t behind = t - uint64_t(rate) * 2 / 1000;
+            // sent, so nothing old is ever sent again. Inferno may send up to
+            // the transmit latency late (a busy moment), so stay that far
+            // behind, plus 5 ms.
+            const uint64_t behind = t - uint64_t(rate) * uint64_t(cfg_.tx_latency_us / 1000 + 5) / 1000;
             if (tx_pos > behind + lead || tx_pos + uint64_t(buffer_frames_) / 2 < behind) tx_pos = behind;
             while (cfg_.tx_channels > 0 && tx_pos < behind) {
                 write_tx(tx_pos, chunk, silence.data());
