@@ -1,0 +1,30 @@
+name: diag-mdns
+on:
+  push:
+    branches: [mdns-diag]
+jobs:
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=$(uname -m)" && cmake --build build -j4 --target jvs-poc
+      - name: Run device and probe mDNS
+        timeout-minutes: 6
+        run: |
+          IF=$(route -n get default | awk '/interface:/{print $2}')
+          IP=$(ipconfig getifaddr $IF)
+          echo "IF=$IF IP=$IP"; ifconfig | grep -E "^[a-z]|inet " 
+          sudo ./build/jvs-poc ptp-master -i $IF --ptp 1 > master.log 2>&1 &
+          sudo RUST_LOG=debug ./build/jvs-poc device -i $IF --rx 4 --tx 4 --name Jose-Test > device.log 2>&1 &
+          sleep 15
+          echo "== lsof 5353"; sudo lsof -nP -iUDP:5353 || true
+          echo "== lsof device ports"; sudo lsof -nP -iUDP | grep jvs-poc || true
+          echo "== browse arc"; (dns-sd -B _netaudio-arc._udp local. & P=$!; sleep 5; kill $P) || true
+          echo "== lookup arc"; (dns-sd -L Jose-Test _netaudio-arc._udp local. & P=$!; sleep 5; kill $P) || true
+          echo "== lookup cmc"; (dns-sd -L Jose-Test _netaudio-cmc._udp local. & P=$!; sleep 5; kill $P) || true
+          echo "== A record"; (dns-sd -G v4 Jose-Test.local & P=$!; sleep 5; kill $P) || true
+          echo "== chan browse"; (dns-sd -B _netaudio-chan._udp local. & P=$!; sleep 5; kill $P) || true
+          echo "== python probe"; python3 scripts/mdns_probe.py $IP || true
+          echo "== device log"; tail -80 device.log
