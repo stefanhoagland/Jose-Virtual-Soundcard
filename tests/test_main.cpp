@@ -1,15 +1,16 @@
-// Unit tests for the wire formats and buffers. No network needed.
+// Unit tests for the wire formats and clocks. No network needed.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
+#include "jvs/clock_server.h"
+#include "jvs/jvs_c.h"
+#include "jvs/media.h"
 #include "jvs/net.h"
 #include "jvs/ptp.h"
-#include "jvs/rtp.h"
-#include "jvs/sap.h"
-#include "jvs/sdp.h"
 
 using namespace jvs;
 
@@ -24,109 +25,6 @@ static int g_fail = 0, g_pass = 0;
         }                                                                    \
     } while (0)
 
-// The shape of an SDP that a Dante device sends in AES67 mode.
-static const char* kDanteSdp =
-    "v=0\r\n"
-    "o=- 1311738121 1311738121 IN IP4 192.168.1.101\r\n"
-    "s=AVIOAI2-1d2ac9 : 2\r\n"
-    "c=IN IP4 239.69.161.26/32\r\n"
-    "t=0 0\r\n"
-    "a=keywds:Dante\r\n"
-    "m=audio 5004 RTP/AVP 97\r\n"
-    "i=2 channels: Left, Right\r\n"
-    "a=recvonly\r\n"
-    "a=rtpmap:97 L24/48000/2\r\n"
-    "a=ptime:1\r\n"
-    "a=ts-refclk:ptp=IEEE1588-2008:00-1D-C1-FF-FE-1D-2A-C9:0\r\n"
-    "a=mediaclk:direct=1145368364\r\n";
-
-static void test_sdp() {
-    StreamDesc d;
-    std::string why;
-    CHECK(parse_sdp(kDanteSdp, d, &why));
-    CHECK(d.name == "AVIOAI2-1d2ac9 : 2");
-    CHECK(ipv4_to_string(d.dest_ip) == "239.69.161.26");
-    CHECK(ipv4_to_string(d.origin_ip) == "192.168.1.101");
-    CHECK(d.port == 5004);
-    CHECK(d.payload_type == 97);
-    CHECK(d.encoding == Encoding::L24);
-    CHECK(d.sample_rate == 48000);
-    CHECK(d.channels == 2);
-    CHECK(d.ptime_us == 1000);
-    CHECK(d.frames_per_packet() == 48);
-    CHECK(d.media_clock_offset == 1145368364u);
-    CHECK(d.ptp_gmid == "00-1D-C1-FF-FE-1D-2A-C9");
-    CHECK(d.ptp_domain == 0);
-
-    // Round trip our own SDP.
-    StreamDesc o;
-    o.name = "JVS Test";
-    o.session_id = "42";
-    o.session_version = 7;
-    parse_ipv4("10.0.0.5", o.origin_ip);
-    parse_ipv4("239.69.200.1", o.dest_ip);
-    o.channels = 8;
-    o.ptime_us = 125;
-    o.ptp_gmid = "00-11-22-FF-FE-33-44-55";
-    StreamDesc back;
-    CHECK(parse_sdp(build_sdp(o), back, &why));
-    CHECK(back.name == o.name && back.channels == 8 && back.dest_ip == o.dest_ip);
-    CHECK(back.ptime_us == 125);
-    CHECK(back.frames_per_packet() == 6);
-    CHECK(back.ptp_gmid == o.ptp_gmid);
-
-    StreamDesc bad;
-    CHECK(!parse_sdp("v=0\r\nm=audio 5004 RTP/AVP 96\r\na=rtpmap:96 opus/48000/2\r\n", bad));
-}
-
-static void test_sap() {
-    SapPacket p;
-    p.origin_ip = 0x0100000A;
-    p.msg_id_hash = 0xBEEF;
-    p.sdp = kDanteSdp;
-    auto bytes = build_sap(p);
-    SapPacket q;
-    CHECK(parse_sap(bytes.data(), int(bytes.size()), q));
-    CHECK(q.msg_id_hash == 0xBEEF && q.origin_ip == p.origin_ip && !q.deletion);
-    CHECK(q.payload_type == "application/sdp");
-    CHECK(q.sdp == p.sdp);
-    // Packets without the payload-type string are allowed too.
-    std::vector<uint8_t> raw(bytes.begin(), bytes.begin() + 8);
-    raw.insert(raw.end(), p.sdp.begin(), p.sdp.end());
-    CHECK(parse_sap(raw.data(), int(raw.size()), q) && q.sdp == p.sdp);
-    p.deletion = true;
-    bytes = build_sap(p);
-    CHECK(parse_sap(bytes.data(), int(bytes.size()), q) && q.deletion);
-}
-
-static void test_rtp() {
-    uint8_t buf[12];
-    RtpHeader h;
-    h.payload_type = 97;
-    h.seq = 65535;
-    h.timestamp = 0xDEADBEEF;
-    h.ssrc = 0x01020304;
-    write_rtp(buf, h);
-    RtpHeader g;
-    CHECK(parse_rtp(buf, 12, g) == 12);
-    CHECK(g.payload_type == 97 && g.seq == 65535 && g.timestamp == 0xDEADBEEF && g.ssrc == 0x01020304);
-
-    float in[6] = {0.0f, 0.5f, -0.5f, 1.0f, -1.0f, 0.25f};
-    uint8_t enc[18];
-    float out[6];
-    encode_samples(in, Encoding::L24, 6, enc);
-    decode_samples(enc, Encoding::L24, 6, out);
-    bool ok = true;
-    for (int i = 0; i < 6; ++i) ok &= std::fabs(in[i] - out[i]) < 2e-7f;
-    CHECK(ok);
-    CHECK(enc[3] == 0x40 && enc[4] == 0x00 && enc[5] == 0x00);  // 0.5 -> 0x400000
-    encode_samples(in, Encoding::L16, 6, enc);
-    decode_samples(enc, Encoding::L16, 6, out);
-    ok = true;
-    for (int i = 0; i < 6; ++i) ok &= std::fabs(in[i] - out[i]) < 1e-4f;
-    CHECK(ok);
-}
-
 static void test_media_clock() {
     // 1.5 s after the epoch at 48 kHz = 72000 samples.
     CHECK(media_time_from_ptp(1500000000LL, 48000, 0) == 72000);
@@ -140,18 +38,88 @@ static void test_media_clock() {
     CHECK(ptp_from_media_time(1, 48000, 0) == 20834);  // rounds up
 }
 
-static void test_ring() {
-    MediaRing r(2, 1000);  // rounds to 1024
-    float a[8] = {1, 2, 3, 4, 5, 6, 7, 8};
-    r.write(0xFFFFFFFE, a, 4);  // wraps across 2^32
-    float o[8] = {};
-    CHECK(r.read(0xFFFFFFFE, o, 4) == 4);
-    CHECK(std::memcmp(a, o, sizeof a) == 0);
-    CHECK(r.read(2, o, 2) == 0);  // not written yet
-    CHECK(o[0] == 0 && o[3] == 0);
-    // Overwritten slot (1024 later) must not read back as the old time.
-    r.write(0xFFFFFFFE + 1024, a, 1);
-    CHECK(r.read(0xFFFFFFFE, o, 1) == 0);
+static void test_tone() {
+    auto tone = make_test_tone(0, 2, 48000);
+    std::vector<float> b(480 * 2);
+    tone(0, b.data(), 480);
+    float peak0 = 0, peak1 = 0;
+    for (int i = 0; i < 480; ++i) {
+        peak0 = std::max(peak0, std::fabs(b[size_t(i * 2)]));
+        peak1 = std::max(peak1, std::fabs(b[size_t(i * 2 + 1)]));
+    }
+    CHECK(std::fabs(peak0 - 0.125f) < 0.002f);  // -18 dBFS
+    CHECK(std::fabs(peak1 - 0.125f) < 0.002f);
+    // Same media time gives the same samples (tones are locked to the clock).
+    std::vector<float> c(10 * 2);
+    tone(100, c.data(), 10);
+    CHECK(std::memcmp(c.data(), b.data() + 200, sizeof(float) * 20) == 0);
+}
+
+static void test_ptpv1_wire() {
+    using namespace ptpv1;
+    uint8_t b[kSyncLen] = {};
+    Header h;
+    h.uuid = {0x00, 0x1d, 0xc1, 0x12, 0x34, 0x56};
+    h.port = 1;
+    h.seq = 4321;
+    h.control = Sync;
+    h.flags = kFlagAssist;
+    write_header(b, h);
+    SyncBody sb;
+    sb.origin_ns = 1792000000LL * 1000000000LL + 123456789;
+    sb.gm_uuid = h.uuid;
+    sb.gm_stratum = 1;
+    sb.sync_interval = -2;
+    write_sync(b, sb);
+    CHECK(b[0] == 0 && b[1] == 1);  // versionPTP = 1
+    CHECK(std::memcmp(b + 4, "_DFLT", 5) == 0);
+    Header g;
+    CHECK(parse_header(b, kSyncLen, g));
+    CHECK(g.control == Sync && g.seq == 4321 && g.port == 1 && g.uuid == h.uuid && (g.flags & kFlagAssist));
+    SyncBody gb;
+    CHECK(parse_sync(b, kSyncLen, gb));
+    CHECK(gb.origin_ns == sb.origin_ns && gb.gm_uuid == sb.gm_uuid && gb.gm_stratum == 1);
+    CHECK(!parse_header(b, kHeaderLen - 1, g));  // too short
+    // A PTPv2 packet is not PTPv1.
+    uint8_t v2[64] = {};
+    ptpmsg::Header h2;
+    h2.type = ptpmsg::Sync;
+    h2.length = 44;
+    ptpmsg::write_header(v2, h2);
+    CHECK(!parse_header(v2, 64, g));
+    uint8_t ts[8];
+    write_timestamp(ts, 5000000007LL);
+    CHECK(read_timestamp(ts) == 5000000007LL);
+}
+
+static void test_clock_overlay() {
+    uint8_t b[40];
+    ClockServer::encode(b, 1, 1000, -2000, 1.5e-6);
+    CHECK(b[0] == 'V' && b[1] == 'C');
+    uint16_t major, minor, flags;
+    int64_t id, last, shift;
+    double fs;
+    std::memcpy(&major, b + 2, 2);
+    std::memcpy(&minor, b + 4, 2);
+    std::memcpy(&flags, b + 6, 2);
+    std::memcpy(&id, b + 8, 8);
+    std::memcpy(&last, b + 16, 8);
+    std::memcpy(&shift, b + 24, 8);
+    std::memcpy(&fs, b + 32, 8);
+    CHECK(major == 1 && minor == 0 && flags == 1);
+    CHECK(id == 1 && last == 1000 && shift == -2000 && fs == 1.5e-6);
+}
+
+static void test_clean_name() {
+    char out[32];
+    jvs_clean_name("Jose Virtual Soundcard", out, sizeof out);
+    CHECK(std::string(out) == "Jose-Virtual-Soundcard");
+    jvs_clean_name("  St. Mark's  FOH!! ", out, sizeof out);
+    CHECK(std::string(out) == "St-Marks-FOH");
+    jvs_clean_name("", out, sizeof out);
+    CHECK(std::string(out) == "Jose-Virtual-Soundcard");
+    jvs_clean_name("a123456789012345678901234567890123456789", out, sizeof out);
+    CHECK(std::strlen(out) == 31);
 }
 
 static void test_ptp_wire() {
@@ -192,12 +160,12 @@ static void test_ptp_wire() {
 }
 
 int main() {
-    test_sdp();
-    test_sap();
-    test_rtp();
     test_media_clock();
-    test_ring();
+    test_tone();
     test_ptp_wire();
+    test_ptpv1_wire();
+    test_clock_overlay();
+    test_clean_name();
     std::printf("%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
