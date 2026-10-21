@@ -51,7 +51,7 @@ jobs:
           name: jvs-poc-macos
           path: jvs-poc-macos.tar.gz
       - name: Build the app
-        run: VERSION=0.2.2 BUILD=${{ github.run_number }} ./scripts/build-app.sh
+        run: VERSION=0.2.3 BUILD=${{ github.run_number }} ./scripts/build-app.sh
       - name: Check the app bundle
         run: |
           APP="dist/Jose Virtual Soundcard.app"

@@ -39,7 +39,7 @@ enum ClockChoice: Int, CaseIterable, Identifiable {
 }
 
 let sampleRates = [44100, 48000, 88200, 96000]
-let latencyChoicesMs = [2.0, 4.0, 5.0, 10.0, 20.0, 40.0]
+let latencyChoicesMs = [4.0, 6.0, 10.0, 20.0, 40.0]  // like Dante Virtual Soundcard; below 4 ms the Mac can't keep up
 let channelChoices = [2, 8, 16, 32, 48, 64]
 
 /// The Dante engine's log, for test reports.
@@ -54,6 +54,8 @@ let logURL: URL = {
 final class EngineModel: ObservableObject {
     private let session = jvs_create()
     private var timer: Timer?
+    /// Keeps macOS from throttling the app (App Nap) while audio runs.
+    private var activity: NSObjectProtocol?
     private let defaults = UserDefaults.standard
 
     @Published var ports: [NetPort] = []
@@ -139,6 +141,11 @@ final class EngineModel: ObservableObject {
         if ok == 0 {
             running = true
             errorText = nil
+            if activity == nil {
+                activity = ProcessInfo.processInfo.beginActivity(
+                    options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled],
+                    reason: "Sending and receiving Dante audio")
+            }
         } else {
             running = false
             errorText = String(cString: jvs_last_error(session))
@@ -147,6 +154,10 @@ final class EngineModel: ObservableObject {
 
     func stop() {
         jvs_stop(session)
+        if let a = activity {
+            ProcessInfo.processInfo.endActivity(a)
+            activity = nil
+        }
         running = false
         status = jvs_status()
         peaks = []
